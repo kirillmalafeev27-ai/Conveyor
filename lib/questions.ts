@@ -1,4 +1,14 @@
+import { EXERCISE_FORMATS, exerciseFormatFor } from '@/lib/exercise-formats';
 import type { LearningSettings } from '@/lib/learning-settings';
+
+export {
+  EXERCISE_FORMATS,
+  exerciseFormatFor,
+  usesEveryFragment,
+  wordOrderFragments,
+  wordOrderInstruction,
+} from '@/lib/exercise-formats';
+export type { ExerciseFormat, ExerciseFormatId } from '@/lib/exercise-formats';
 
 export type GameQuestion = {
   id: string;
@@ -51,7 +61,7 @@ const FALLBACK_DATA: Array<Omit<GameQuestion, 'id'>> = [
     level: 'A1',
     lexicalTopic: 'Reisen & Tourismus',
     grammarTopic: 'Wortstellung im Hauptsatz',
-    prompt: 'Составьте немецкое предложение.',
+    prompt: 'Соберите из всех частей главное предложение.',
     context: 'morgen / ich / fahre / nach Berlin',
     translation: 'Завтра я еду в Берлин.',
     options: [
@@ -302,7 +312,7 @@ const FALLBACK_DATA: Array<Omit<GameQuestion, 'id'>> = [
     level: 'B2',
     lexicalTopic: 'Termine & Zeitmanagement',
     grammarTopic: 'Wortstellung im Hauptsatz',
-    prompt: 'Составьте немецкое предложение.',
+    prompt: 'Соберите из всех частей главное предложение.',
     context: 'trotzdem / kommt / er / pünktlich',
     translation: 'Тем не менее он приходит вовремя.',
     options: [
@@ -314,7 +324,43 @@ const FALLBACK_DATA: Array<Omit<GameQuestion, 'id'>> = [
     correct: 0,
     rule: 'После trotzdem спрягаемый глагол остаётся на втором месте.',
   },
+  {
+    level: 'A2',
+    lexicalTopic: 'Schule & Lernen',
+    grammarTopic: 'Wortstellung im Nebensatz',
+    prompt: 'Соберите из всех частей придаточное предложение.',
+    context: 'Ich hoffe, / dass / er / die Prüfung / besteht',
+    translation: 'Надеюсь, что он сдаст экзамен.',
+    options: [
+      'Ich hoffe, dass er die Prüfung besteht.',
+      'Ich hoffe, dass er besteht die Prüfung.',
+      'Ich hoffe, dass besteht er die Prüfung.',
+      'Ich hoffe, er dass die Prüfung besteht.',
+    ],
+    correct: 0,
+    rule: 'После dass спрягаемый глагол уходит в самый конец придаточного: dass er die Prüfung besteht.',
+  },
+  {
+    level: 'B1',
+    lexicalTopic: 'Arbeit & Beruf',
+    grammarTopic: 'Wortstellung im Nebensatz',
+    prompt: 'Соберите из всех частей придаточное предложение.',
+    context: 'Er fragt, / ob / ich / morgen / arbeiten / muss',
+    translation: 'Он спрашивает, должен ли я завтра работать.',
+    options: [
+      'Er fragt, ob ich morgen arbeiten muss.',
+      'Er fragt, ob ich muss morgen arbeiten.',
+      'Er fragt, ob muss ich morgen arbeiten.',
+      'Er fragt, ob ich morgen muss arbeiten.',
+    ],
+    correct: 0,
+    rule: 'В придаточном с ob модальный глагол закрывает предложение: ob ich morgen arbeiten muss.',
+  },
 ];
+
+export function exerciseFormatOf(question: Pick<GameQuestion, 'grammarTopic'>) {
+  return exerciseFormatFor(question.grammarTopic);
+}
 
 export const FALLBACK_QUESTIONS: GameQuestion[] = FALLBACK_DATA.map(
   (question) => ({
@@ -375,7 +421,7 @@ export function normalizeQuestion(
   const context = sourceContext || sourcePrompt;
   const prompt = sourceContext
     ? sourcePrompt
-    : 'Вставьте правильную немецкую форму.';
+    : EXERCISE_FORMATS.gap.instruction;
   const translation = cleanText(
     source.translation ?? source.russianTranslation ?? source.ru,
     360,

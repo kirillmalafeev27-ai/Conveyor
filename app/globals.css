@@ -1188,6 +1188,12 @@ kbd {
   color: #71837f;
   font-size: 0.65rem;
 }
+.answer-hint {
+  margin: 0 0 8px;
+  color: #849994;
+  font-size: 0.61rem;
+  letter-spacing: 0.02em;
+}
 .answer-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

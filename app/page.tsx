@@ -63,6 +63,7 @@ import {
   type ProcessingState,
   type ProcessingTarget,
 } from '@/lib/processing-game';
+import { exerciseFormatOf } from '@/lib/questions';
 import {
   DEFAULT_LEARNING_SETTINGS,
   GRAMMAR_TOPIC_GROUPS,
@@ -215,6 +216,7 @@ export default function ConveyorGame() {
   const visitedSectionsRef = useRef(new Set<string>());
 
   const pool = useQuestionPool(settings, hud.phase === 'playing');
+  const questionFormat = exerciseFormatOf(pool.question);
   const poolRef = useRef(pool);
   const questionRef = useRef(pool.question);
   useEffect(() => {
@@ -1095,6 +1097,9 @@ export default function ConveyorGame() {
                 </div>
               ) : (
                 <div className="answer-panel">
+                  <p className="answer-hint">
+                    {questionFormat.hints[settings.mode]}
+                  </p>
                   {settings.mode === 'recognition' ? (
                     <div className="answer-grid">
                       {pool.question.options.map((answer, index) => (
@@ -1115,7 +1120,7 @@ export default function ConveyorGame() {
                         onChange={(event) =>
                           setRecallAnswer(event.target.value)
                         }
-                        placeholder="Введи немецкий ответ…"
+                        placeholder={questionFormat.recallPlaceholder}
                         autoComplete="off"
                         spellCheck="false"
                         aria-label="Ответ на немецком"
