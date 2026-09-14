@@ -2,6 +2,7 @@ import bpy
 import json
 import math
 import os
+import shutil
 from mathutils import Vector
 
 
@@ -10,6 +11,10 @@ BLEND_PATH = os.path.join(OUT_DIR, "conveyor_factory_kit.blend")
 GLB_PATH = os.path.join(OUT_DIR, "conveyor_factory_kit.glb")
 PREVIEW_PATH = os.path.join(OUT_DIR, "conveyor_factory_kit_preview.png")
 MANIFEST_PATH = os.path.join(OUT_DIR, "conveyor_factory_kit_manifest.json")
+SITE_PREVIEW_PATH = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "public", "visuals",
+                 "conveyor_factory_kit_preview.png")
+)
 
 
 def clean_scene():
@@ -273,6 +278,46 @@ cube("Press_Warning_L", r, (-1.52, -1.02, 1.15), (0.1, 0.12, 1.65), MAT["yellow"
 cube("Press_Warning_R", r, (1.52, -1.02, 1.15), (0.1, 0.12, 1.65), MAT["yellow"], edge=0.02)
 
 
+# Full-width processing press ----------------------------------------------
+# This is deliberately architectural rather than a small prop: its four
+# columns live outside a 6.8 m belt and the moving platen spans the workpiece.
+r = root("ASSET_Processing_Line_Press", (9.0, 9.5, 0.0))
+asset_roots.append(r)
+for x in (-3.45, 3.45):
+    cube(f"LinePress_Foot_{'L' if x < 0 else 'R'}", r, (x, 0, 0.34),
+         (1.05, 5.45, 0.68), MAT["steel_dark"], edge=0.15)
+    for y in (-2.1, 2.1):
+        cube(f"LinePress_Column_{'L' if x < 0 else 'R'}_{'F' if y < 0 else 'B'}",
+             r, (x, y, 3.72), (0.78, 0.82, 6.8), MAT["steel_blue"], edge=0.16)
+        cube(f"LinePress_Guard_{'L' if x < 0 else 'R'}_{'F' if y < 0 else 'B'}",
+             r, (x * 0.985, y - 0.04, 1.65), (0.9, 0.94, 0.18),
+             MAT["yellow"], edge=0.045)
+cube("LinePress_Crown", r, (0, 0, 7.05), (8.05, 5.35, 1.12),
+     MAT["steel_blue"], edge=0.2)
+cube("LinePress_Crown_Inset", r, (0, -2.7, 7.05), (5.65, 0.16, 0.58),
+     MAT["yellow"], edge=0.06)
+for x in (-1.55, 1.55):
+    cylinder(f"LinePress_Cylinder_{'L' if x < 0 else 'R'}", r,
+             (x, 0, 5.75), 0.63, 2.15, MAT["steel_light"],
+             vertices=24, smooth=True, edge=0.06)
+    cylinder(f"LinePress_Rod_{'L' if x < 0 else 'R'}", r,
+             (x, 0, 4.52), 0.31, 1.25, MAT["steel_light"],
+             vertices=20, smooth=True, edge=0.04)
+cube("Press_Main_Ram", r, (0, 0, 4.38), (4.9, 3.2, 0.58),
+     MAT["steel_light"], edge=0.13)
+cube("Press_Main_Platen", r, (0, 0, 3.86), (5.85, 4.05, 0.52),
+     MAT["yellow"], edge=0.11)
+cube("LinePress_Lower_Die", r, (0, 0, 0.82), (4.95, 3.52, 0.48),
+     MAT["steel_light"], edge=0.1)
+for x in (-2.68, 2.68):
+    cylinder(f"LinePress_Beacon_{'L' if x < 0 else 'R'}", r,
+             (x, -2.67, 6.92), 0.22, 0.54, MAT["red"],
+             vertices=16, smooth=True, edge=0.025)
+for y in (-2.48, 2.48):
+    torus(f"LinePress_Hose_{'F' if y < 0 else 'B'}", r, (0, y, 5.62),
+          1.5, 0.11, MAT["black"], rot=(math.pi / 2, 0, 0))
+
+
 # Furnace portal ------------------------------------------------------------
 r = root("ASSET_Furnace_Portal", (5.3, 4.2, 0.0))
 asset_roots.append(r)
@@ -287,6 +332,120 @@ for x in (-1.48, 1.48):
 for x in (-0.7, 0, 0.7):
     cone(f"Furnace_Flame_{int((x+0.7)*10):02d}", r, (x, -0.62, 0.78),
          0.25, 0.05, 1.05, MAT["amber"], vertices=10)
+
+
+# Long furnace tunnel -------------------------------------------------------
+# The open ends make the threat readable from the follow camera, while the
+# glowing lining and burner rows make it impossible to mistake for a box.
+r = root("ASSET_Processing_Furnace_Tunnel", (18.0, 9.5, 0.0))
+asset_roots.append(r)
+for x in (-3.55, 3.55):
+    cube(f"Tunnel_Shell_{'L' if x < 0 else 'R'}", r, (x, 0, 3.0),
+         (0.72, 11.7, 5.65), MAT["steel_blue"], edge=0.18)
+    cube(f"Tunnel_Heat_Lining_{'L' if x < 0 else 'R'}", r,
+         (x * 0.91, 0, 2.75), (0.16, 10.9, 4.15), MAT["heat"], edge=0.055)
+cube("Tunnel_Roof", r, (0, 0, 5.66), (7.8, 11.72, 0.74),
+     MAT["steel_dark"], edge=0.2)
+cube("Tunnel_Ceiling_Heat", r, (0, 0, 5.22), (6.5, 10.95, 0.13),
+     MAT["heat"], edge=0.04)
+for index, y in enumerate((-5.45, -2.7, 0, 2.7, 5.45)):
+    cube(f"Tunnel_Rib_Left_{index+1}", r, (-3.82, y, 3.0),
+         (0.34, 0.38, 6.05), MAT["yellow"], edge=0.07)
+    cube(f"Tunnel_Rib_Right_{index+1}", r, (3.82, y, 3.0),
+         (0.34, 0.38, 6.05), MAT["yellow"], edge=0.07)
+    cube(f"Tunnel_Rib_Top_{index+1}", r, (0, y, 5.95),
+         (8.0, 0.38, 0.35), MAT["yellow"], edge=0.07)
+for row, y in enumerate((-4.25, -2.1, 0, 2.1, 4.25)):
+    for x in (-2.45, 2.45):
+        cylinder(f"Tunnel_Burner_{row+1}_{'L' if x < 0 else 'R'}", r,
+                 (x, y, 1.05), 0.19, 0.5, MAT["amber"],
+                 vertices=14, smooth=True, edge=0.025)
+        cone(f"Tunnel_Flame_{row+1}_{'L' if x < 0 else 'R'}", r,
+             (x * 0.82, y, 1.22), 0.28, 0.055, 1.05, MAT["amber"],
+             rot=(0, math.pi / 2 if x < 0 else -math.pi / 2, 0), vertices=12)
+for y in (-3.65, 0, 3.65):
+    cylinder(f"Tunnel_Stack_{int(y * 10):+03d}", r, (2.45, y, 7.0),
+             0.43, 2.25, MAT["steel_light"], vertices=18, smooth=True, edge=0.05)
+    cone(f"Tunnel_Stack_Cap_{int(y * 10):+03d}", r, (2.45, y, 8.23),
+         0.62, 0.45, 0.32, MAT["steel_dark"], vertices=18)
+
+
+# Shaping rollers -----------------------------------------------------------
+r = root("ASSET_Shaping_Rollers", (29.0, 9.5, 0.0))
+asset_roots.append(r)
+for x in (-3.45, 3.45):
+    cube(f"Roller_Line_Base_{'L' if x < 0 else 'R'}", r, (x, 0, 0.3),
+         (0.88, 11.2, 0.6), MAT["steel_dark"], edge=0.13)
+for index, y in enumerate((-4.25, -1.45, 1.45, 4.25)):
+    for x in (-3.45, 3.45):
+        cube(f"Roller_Stand_{index+1}_{'L' if x < 0 else 'R'}", r,
+             (x, y, 2.6), (0.74, 0.72, 4.75), MAT["steel_blue"], edge=0.14)
+    cube(f"Roller_Crossbeam_{index+1}", r, (0, y, 4.86),
+         (7.65, 0.82, 0.64), MAT["steel_blue"], edge=0.13)
+    cylinder(f"Roller_Upper_{index+1}", r, (0, y, 2.83), 0.58, 6.35,
+             MAT["steel_light"], rot=(0, math.pi / 2, 0), vertices=24,
+             smooth=True, edge=0.055)
+    cylinder(f"Roller_Lower_{index+1}", r, (0, y, 1.35), 0.58, 6.35,
+             MAT["steel_light"], rot=(0, math.pi / 2, 0), vertices=24,
+             smooth=True, edge=0.055)
+    for x in (-3.15, 3.15):
+        cylinder(f"Roller_Bearing_{index+1}_{'L' if x < 0 else 'R'}", r,
+                 (x, y, 2.83), 0.82, 0.28, MAT["yellow"],
+                 rot=(0, math.pi / 2, 0), vertices=20, smooth=True, edge=0.04)
+
+
+# Cooling arch --------------------------------------------------------------
+r = root("ASSET_Cooling_Arch", (40.0, 9.5, 0.0))
+asset_roots.append(r)
+for x in (-3.55, 3.55):
+    cube(f"Cooling_Base_{'L' if x < 0 else 'R'}", r, (x, 0, 0.28),
+         (0.9, 10.8, 0.56), MAT["steel_dark"], edge=0.13)
+    cylinder(f"Cooling_Manifold_{'L' if x < 0 else 'R'}", r,
+             (x, 0, 3.15), 0.3, 9.8, MAT["steel_blue"],
+             rot=(math.pi / 2, 0, 0), vertices=18, smooth=True, edge=0.045)
+for index, y in enumerate((-4.25, -1.42, 1.42, 4.25)):
+    for x in (-3.55, 3.55):
+        cylinder(f"Cooling_Riser_{index+1}_{'L' if x < 0 else 'R'}", r,
+                 (x, y, 2.65), 0.28, 4.8, MAT["steel_light"],
+                 vertices=18, smooth=True, edge=0.045)
+    cylinder(f"Cooling_Header_{index+1}", r, (0, y, 5.0), 0.34, 7.1,
+             MAT["steel_blue"], rot=(0, math.pi / 2, 0), vertices=20,
+             smooth=True, edge=0.05)
+    for nozzle_index, x in enumerate((-2.55, -1.25, 0, 1.25, 2.55)):
+        cone(f"Cooling_Nozzle_{index+1}_{nozzle_index+1}", r,
+             (x, y, 4.42), 0.2, 0.1, 0.62, MAT["yellow"], vertices=14)
+        cylinder(f"Cooling_Water_{index+1}_{nozzle_index+1}", r,
+                 (x, y, 2.75), 0.075, 2.72, MAT["cyan"], vertices=10,
+                 smooth=True, edge=0.012)
+    for steam_index, x in enumerate((-2.15, 0, 2.15)):
+        sphere(f"Cooling_Steam_{index+1}_{steam_index+1}", r,
+               (x, y + 0.14, 1.34 + (steam_index % 2) * 0.28), 0.52,
+               MAT["white"], scale=(1.35, 0.75, 0.7))
+
+
+# Transverse cutter ---------------------------------------------------------
+r = root("ASSET_Processing_Transverse_Cutter", (51.0, 9.5, 0.0))
+asset_roots.append(r)
+for x in (-3.55, 3.55):
+    cube(f"Cutter_Foot_{'L' if x < 0 else 'R'}", r, (x, 0, 0.34),
+         (0.96, 4.2, 0.68), MAT["steel_dark"], edge=0.14)
+    cube(f"Cutter_Post_{'L' if x < 0 else 'R'}", r, (x, 0, 3.15),
+         (0.72, 0.86, 5.7), MAT["steel_blue"], edge=0.15)
+cube("Cutter_Cross_Track", r, (0, 0, 5.68), (7.85, 1.0, 0.8),
+     MAT["steel_blue"], edge=0.16)
+cube("Cutter_Carriage", r, (0, 0, 4.83), (1.6, 1.25, 1.05),
+     MAT["yellow"], edge=0.15)
+gear_disc("Cutter_Blade", r, (0, -0.2, 3.28), 1.72, 1.43, 0.22, 24,
+          MAT["steel_light"])
+cylinder("Cutter_Hub", r, (0, -0.2, 3.28), 0.35, 0.42,
+         MAT["yellow"], rot=(math.pi / 2, 0, 0), vertices=20, smooth=True)
+for x in (-2.65, 2.65):
+    cube(f"Cutter_Cut_Line_{'L' if x < 0 else 'R'}", r, (x, -1.55, 0.84),
+         (2.4, 0.12, 0.12), MAT["red"], edge=0.025)
+for x in (-3.12, 3.12):
+    cylinder(f"Cutter_Beacon_{'L' if x < 0 else 'R'}", r,
+             (x, -0.5, 5.72), 0.22, 0.48, MAT["red"], vertices=16,
+             smooth=True, edge=0.025)
 
 
 # Transverse saw ------------------------------------------------------------
@@ -445,22 +604,71 @@ for asset_root in asset_roots:
 
 
 # Preview stage -------------------------------------------------------------
-bpy.ops.mesh.primitive_plane_add(size=2, location=(0, -1.7, -0.12))
+# The title screen must communicate the actual game: one broad production
+# line and a metal workpiece entering architectural machinery. Hide the legacy
+# kit props (worker, terminals and small route hazards) from this render.
+preview_layout = {
+    "ASSET_Processing_Furnace_Tunnel": (0.0, 5.4, 0.42),
+    "ASSET_Processing_Line_Press": (0.0, -6.0, 0.42),
+}
+for asset_root in asset_roots:
+    visible_in_preview = asset_root.name in preview_layout
+    asset_root.hide_render = not visible_in_preview
+    for child in asset_root.children_recursive:
+        child.hide_render = not visible_in_preview
+    if visible_in_preview:
+        asset_root.location = preview_layout[asset_root.name]
+
+bpy.ops.mesh.primitive_plane_add(size=2, location=(0, 0, -0.22))
 stage = bpy.context.object
 stage.name = "PREVIEW_Stage"
 move_to_collection(stage, preview_col)
-stage.scale = (7.8, 7.0, 1)
+stage.scale = (6.4, 13.2, 1)
 apply_transform(stage)
 stage_mat = make_material("M_Preview_Floor", (0.012, 0.022, 0.032), 0.25, 0.48)
 assign_material(stage, stage_mat)
 
-for y in (-2.9, 1.8, 6.5):
-    cube_obj = None
-    bpy.ops.mesh.primitive_cube_add(location=(0, y, -0.055), scale=(7.6, 0.018, 0.012))
-    cube_obj = bpy.context.object
-    cube_obj.name = f"PREVIEW_GridLine_{y:+.1f}"
-    move_to_collection(cube_obj, preview_col)
-    assign_material(cube_obj, MAT["cyan"])
+# Broad, uninterrupted belt.
+bpy.ops.mesh.primitive_cube_add(location=(0, 0, 0.08), scale=(4.15, 12.3, 0.24))
+preview_belt = bpy.context.object
+preview_belt.name = "PREVIEW_Main_Belt"
+move_to_collection(preview_belt, preview_col)
+assign_material(preview_belt, MAT["rubber"])
+bevel(preview_belt, 0.12, 2)
+
+for x in (-4.18, 4.18):
+    bpy.ops.mesh.primitive_cube_add(location=(x, 0, 0.45), scale=(0.12, 12.3, 0.18))
+    rail = bpy.context.object
+    rail.name = f"PREVIEW_Rail_{'L' if x < 0 else 'R'}"
+    move_to_collection(rail, preview_col)
+    assign_material(rail, MAT["yellow"])
+    bevel(rail, 0.05, 2)
+
+# The playable object: a clearly isolated hot slab, never a humanoid avatar.
+bpy.ops.mesh.primitive_cube_add(location=(0, -10.0, 0.82))
+preview_piece = bpy.context.object
+preview_piece.name = "PREVIEW_Metal_Workpiece"
+preview_piece.dimensions = (3.0, 3.8, 0.92)
+apply_transform(preview_piece)
+move_to_collection(preview_piece, preview_col)
+preview_piece_mat = make_material(
+    "M_Preview_Hot_Workpiece", (0.72, 0.18, 0.025), 0.76, 0.24,
+    (1.0, 0.1, 0.01), 2.8
+)
+assign_material(preview_piece, preview_piece_mat)
+bevel(preview_piece, 0.18, 3)
+
+for y in (-9.4, -2.9, 3.7, 10.1):
+    for side in (-1, 1):
+        bpy.ops.mesh.primitive_cube_add(
+            location=(side * 0.72, y, 0.36),
+            scale=(0.09, 1.2, 0.035),
+            rotation=(0, 0, side * math.radians(34)),
+        )
+        arrow = bpy.context.object
+        arrow.name = f"PREVIEW_Direction_{y:+.1f}_{side:+d}"
+        move_to_collection(arrow, preview_col)
+        assign_material(arrow, MAT["cyan"])
 
 
 def look_at(obj, target):
@@ -468,13 +676,13 @@ def look_at(obj, target):
     obj.rotation_euler = direction.to_track_quat("-Z", "Y").to_euler()
 
 
-bpy.ops.object.camera_add(location=(17.8, -23.5, 19.0))
+bpy.ops.object.camera_add(location=(15.2, -24.5, 20.5))
 camera = bpy.context.object
 camera.name = "PREVIEW_Camera"
 move_to_collection(camera, preview_col)
 camera.data.type = "ORTHO"
-camera.data.ortho_scale = 21.0
-look_at(camera, (0, -1.7, 1.7))
+camera.data.ortho_scale = 25.0
+look_at(camera, (0, 0.4, 2.2))
 scene.camera = camera
 
 def add_area(name, loc, energy, color, size):
@@ -517,6 +725,8 @@ with open(MANIFEST_PATH, "w", encoding="utf-8") as handle:
 
 bpy.ops.wm.save_as_mainfile(filepath=BLEND_PATH, compress=True)
 bpy.ops.render.render(write_still=True)
+os.makedirs(os.path.dirname(SITE_PREVIEW_PATH), exist_ok=True)
+shutil.copyfile(PREVIEW_PATH, SITE_PREVIEW_PATH)
 
 print("ASSET_BUILD_COMPLETE")
 print(json.dumps(manifest, ensure_ascii=False))

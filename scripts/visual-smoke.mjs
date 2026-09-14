@@ -4,8 +4,9 @@ import { dirname } from 'node:path';
 const port = Number(process.argv[2] ?? 9224);
 const outputPath = process.argv[3] ?? 'artifacts/conveyor-visual-smoke.png';
 const mode = process.argv[4] ?? 'game';
-const captureControls = mode === 'controls' || mode === 'terminal';
+const captureControls = mode === 'controls';
 const extraWait = Number(process.argv[5] ?? 0);
+const factoryLevel = Math.min(5, Math.max(1, Number(process.argv[6] ?? 1)));
 const wait = (milliseconds) =>
   new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -64,6 +65,7 @@ for (let attempt = 0; attempt < 24; attempt += 1) {
   const launch = await send('Runtime.evaluate', {
     expression: `(() => {
       if (!document.querySelector('.menu-overlay')) return 'running';
+      [...document.querySelectorAll('.factory-level-picker button')][${factoryLevel - 1}]?.click();
       const button = document.querySelector('.start-button');
       button?.click();
       return button ? 'clicked' : 'waiting';
@@ -94,23 +96,23 @@ if (captureControls) {
   }
 }
 
-if (mode === 'terminal') {
-  await send('Runtime.evaluate', {
-    expression: `document.querySelector('.context-action:not(:disabled)')?.click()`,
-  });
-  await wait(900);
-}
-
 const state = await send('Runtime.evaluate', {
   expression: `({
     clicked: ${clicked},
+    factoryLevel: ${factoryLevel},
     title: document.title,
     canvas: document.querySelector('canvas')?.getBoundingClientRect().toJSON(),
     bodyOverflow: getComputedStyle(document.body).overflow,
     scrollHeight: document.documentElement.scrollHeight,
     viewportHeight: innerHeight,
     actionMode: Boolean(document.querySelector('.quiz-card.action-mode')),
-    dockPrompt: document.querySelector('.dock-prompt')?.textContent ?? null
+    targetBlueprint: Boolean(document.querySelector('.target-blueprint')),
+    answerButtons: document.querySelectorAll('.answer-grid button').length,
+    laneActions: document.querySelectorAll('.lane-action').length,
+    shiftActions: document.querySelectorAll('.shift-action button').length,
+    legacyDockPrompt: document.querySelector('.dock-prompt')?.textContent ?? null,
+    legacyVitals: document.querySelectorAll('.viewport-vitals').length,
+    noScroll: document.documentElement.scrollHeight <= innerHeight
   })`,
   returnByValue: true,
 });

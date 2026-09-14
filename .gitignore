@@ -45,5 +45,6 @@ next-env.d.ts
 # Local Blender authoring and preview files are kept in the project folder,
 # but the hosted runtime only needs the optimized GLB in /public/models.
 /blender/*.blend
-/public/visuals/
+/public/visuals/*
+!/public/visuals/conveyor_factory_kit_preview.png
 /public/og.png

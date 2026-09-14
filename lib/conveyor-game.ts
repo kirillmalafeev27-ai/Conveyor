@@ -1,3 +1,22 @@
+import {
+  LEVEL_CONFIGS,
+  PROCESSING_BONUS_DATA,
+  PROCESSING_LEVELS,
+  applyMachineEffect,
+  cloneProcessingTarget,
+  createProcessingState,
+  getProcessingVisualState,
+  type ProcessingAction,
+  type ProcessingBonusId,
+  type ProcessingLane,
+  type ProcessingLevelId,
+  type ProcessingMachineId,
+  type ProcessingState,
+  type ProcessingTarget,
+} from './processing-game.ts';
+
+export * from './processing-game.ts';
+
 export type GamePhase = 'menu' | 'playing' | 'won' | 'lost';
 export type TerminalId = 'A' | 'B' | 'C';
 export type BonusId = 'brake' | 'overdrive' | 'reverse' | 'anchor' | 'transfer';
@@ -61,6 +80,22 @@ export type ConveyorRun = {
   message: string;
   objective: string;
   lossReason: string;
+  /** New metal-processing campaign state. Legacy route fields remain during UI migration. */
+  level: ProcessingLevelId;
+  factoryProgress: number;
+  stageIndex: number;
+  stageProgress: number;
+  processingLane: ProcessingLane;
+  processingVariant: 0 | 1;
+  workpiece: ProcessingState;
+  target: ProcessingTarget;
+  correctAnswers: number;
+  wrongAnswers: number;
+  bonusProgress: number;
+  bonusOffer: readonly [ProcessingBonusId, ProcessingBonusId] | null;
+  storedProcessingBonus: ProcessingBonusId | null;
+  nextMachineMultiplier: number;
+  lastMachineId: ProcessingMachineId | null;
 };
 
 const CYAN = 0x50e8d2;
@@ -263,6 +298,12 @@ export const BONUS_DATA: Record<
 
 export const RUN_DURATION_SECONDS = 180;
 export const JUNCTION_WINDOW = 0.7;
+export const QUIZ_IMPULSE_DECAY_PER_SECOND = 1.65;
+export const EARNED_ACTION_DECAY_PER_SECOND = 2.25;
+export const PROCESSING_BONUS_CORRECT_ANSWERS = 3;
+export const PROCESSING_BONUS_DURATION_SECONDS = 5;
+export const PROCESSING_FORWARD_SHIFT = 12;
+export const PROCESSING_BACKWARD_SHIFT = -6;
 
 function segmentLength(
   start: readonly [number, number],
@@ -511,6 +552,21 @@ export function createRun(): ConveyorRun {
     message: 'Ответь правильно, чтобы получить команду.',
     objective: 'Активируй A, B и C в любом порядке',
     lossReason: '',
+    level: 1,
+    factoryProgress: LEVEL_CONFIGS[1].startAt,
+    stageIndex: 0,
+    stageProgress: 0,
+    processingLane: 'upper',
+    processingVariant: 0,
+    workpiece: createProcessingState(),
+    target: cloneProcessingTarget(PROCESSING_LEVELS[1].target),
+    correctAnswers: 0,
+    wrongAnswers: 0,
+    bonusProgress: 0,
+    bonusOffer: null,
+    storedProcessingBonus: null,
+    nextMachineMultiplier: 1,
+    lastMachineId: null,
   };
 }
 
@@ -529,4 +585,342 @@ export function nearestTerminal(run: ConveyorRun) {
 export function formatClock(seconds: number) {
   const safe = Math.max(0, Math.ceil(seconds));
   return `${Math.floor(safe / 60)}:${String(safe % 60).padStart(2, '0')}`;
+}
+
+export type ProcessingQuizResolution = {
+  run: ConveyorRun;
+  accepted: boolean;
+  correct: boolean;
+  grantedAction: boolean;
+  bonusEarned: boolean;
+};
+
+export type ProcessingActionResolution = {
+  run: ConveyorRun;
+  consumed: boolean;
+  action: ProcessingAction;
+  longitudinalDelta: number;
+  reason: string;
+};
+
+export type ProcessingBonusResolution = {
+  run: ConveyorRun;
+  activated: boolean;
+  bonusId: ProcessingBonusId | null;
+  reason: string;
+};
+
+export type ProcessingMachineResolution = {
+  run: ConveyorRun;
+  machineId: ProcessingMachineId;
+  effectMultiplier: number;
+  crackRiskAdded: number;
+};
+
+/** Deep-enough clone for every field changed by the pure processing helpers. */
+export function cloneConveyorRun(run: ConveyorRun): ConveyorRun {
+  return {
+    ...run,
+    routeHistory: [...run.routeHistory],
+    completed: { ...run.completed },
+    terminalOrder: [...run.terminalOrder],
+    bonuses: { ...run.bonuses },
+    cooldowns: { ...run.cooldowns },
+    workpiece: createProcessingState(run.workpiece),
+    target: cloneProcessingTarget(run.target),
+    bonusOffer: run.bonusOffer ? [...run.bonusOffer] : null,
+  };
+}
+
+const BONUS_OFFER_ROTATION: ReadonlyArray<
+  readonly [ProcessingBonusId, ProcessingBonusId]
+> = [
+  ['booster', 'damper'],
+  ['boost', 'slow'],
+  ['booster', 'slow'],
+  ['damper', 'boost'],
+];
+
+function releaseEarnedBonusOffer(run: ConveyorRun) {
+  if (
+    !PROCESSING_LEVELS[run.level].bonusesEnabled ||
+    run.bonusProgress < PROCESSING_BONUS_CORRECT_ANSWERS ||
+    run.bonusOffer
+  ) {
+    return false;
+  }
+  const rewardIndex = Math.max(
+    0,
+    Math.floor(run.correctAnswers / PROCESSING_BONUS_CORRECT_ANSWERS) - 1,
+  );
+  const pair = BONUS_OFFER_ROTATION[rewardIndex % BONUS_OFFER_ROTATION.length];
+  run.bonusOffer = [pair[0], pair[1]];
+  return true;
+}
+
+/**
+ * Pure quiz reducer. A correct answer can hold one action, never a stack.
+ * Every third correct answer unlocks a two-card bonus choice from level 4.
+ */
+export function resolveProcessingQuiz(
+  source: ConveyorRun,
+  correct: boolean,
+): ProcessingQuizResolution {
+  const run = cloneConveyorRun(source);
+  if (run.actionReady) {
+    return {
+      run,
+      accepted: false,
+      correct,
+      grantedAction: false,
+      bonusEarned: false,
+    };
+  }
+
+  if (!correct) {
+    run.actionReady = false;
+    run.streak = 0;
+    run.wrongAnswers += 1;
+    run.message = 'Неверно. Команда не выдана.';
+    return {
+      run,
+      accepted: true,
+      correct: false,
+      grantedAction: false,
+      bonusEarned: false,
+    };
+  }
+
+  run.actionReady = true;
+  run.streak += 1;
+  run.correctAnswers += 1;
+  if (PROCESSING_LEVELS[run.level].bonusesEnabled) {
+    run.bonusProgress = Math.min(
+      PROCESSING_BONUS_CORRECT_ANSWERS,
+      run.bonusProgress + 1,
+    );
+  }
+  const bonusEarned = releaseEarnedBonusOffer(run);
+  run.message = bonusEarned
+    ? 'Верно. Выбери одно действие и один из двух бонусов.'
+    : 'Верно. Доступно ровно одно действие.';
+  return {
+    run,
+    accepted: true,
+    correct: true,
+    grantedAction: true,
+    bonusEarned,
+  };
+}
+
+/** Impulse burns slowly while answering and slightly faster after it is earned. */
+export function decayProcessingImpulse(
+  source: ConveyorRun,
+  deltaSeconds: number,
+): ConveyorRun {
+  const run = cloneConveyorRun(source);
+  const rate = run.actionReady
+    ? EARNED_ACTION_DECAY_PER_SECOND
+    : QUIZ_IMPULSE_DECAY_PER_SECOND;
+  run.charge = Math.max(0, run.charge - Math.max(0, deltaSeconds) * rate);
+  if (run.charge <= 0 && run.actionReady) {
+    run.actionReady = false;
+    run.message = 'Импульс погас. Нужен новый правильный ответ.';
+  }
+  return run;
+}
+
+/**
+ * Consumes one answer-earned action. Route movement is returned as a delta so
+ * page.tsx can animate it; lane selection itself is resolved here.
+ */
+export function consumeProcessingAction(
+  source: ConveyorRun,
+  action: ProcessingAction,
+): ProcessingActionResolution {
+  const run = cloneConveyorRun(source);
+  if (!run.actionReady || run.charge <= 0) {
+    return {
+      run,
+      consumed: false,
+      action,
+      longitudinalDelta: 0,
+      reason: 'Сначала ответь правильно, пока не погас импульс.',
+    };
+  }
+
+  const committedFork = LEVEL_CONFIGS[run.level].forks.find(
+    (fork) =>
+      run.factoryProgress >= fork.commitAt &&
+      run.factoryProgress < fork.mergeAt,
+  );
+  if (action === 'toggle-lane' && committedFork) {
+    run.message = 'Ветка уже выбрана. Используй сдвиг назад или вперёд.';
+    return {
+      run,
+      consumed: false,
+      action,
+      longitudinalDelta: 0,
+      reason: run.message,
+    };
+  }
+
+  let longitudinalDelta = 0;
+  if (action === 'toggle-lane') {
+    run.processingLane = run.processingLane === 'upper' ? 'lower' : 'upper';
+    run.message =
+      run.processingLane === 'upper'
+        ? 'Выбрана верхняя линия.'
+        : 'Выбрана нижняя линия.';
+  } else {
+    longitudinalDelta =
+      action === 'shift-forward'
+        ? PROCESSING_FORWARD_SHIFT
+        : PROCESSING_BACKWARD_SHIFT;
+    run.message =
+      action === 'shift-forward' ? 'Рывок вперёд.' : 'Смещение назад.';
+  }
+  run.actionReady = false;
+  return {
+    run,
+    consumed: true,
+    action,
+    longitudinalDelta,
+    reason: run.message,
+  };
+}
+
+/** Stores or replaces the single saved bonus with one of the current offers. */
+export function chooseProcessingBonus(
+  source: ConveyorRun,
+  bonusId: ProcessingBonusId,
+): ProcessingBonusResolution {
+  const run = cloneConveyorRun(source);
+  if (!run.bonusOffer?.includes(bonusId)) {
+    return {
+      run,
+      activated: false,
+      bonusId,
+      reason: 'Этот бонус сейчас не предложен.',
+    };
+  }
+  run.storedProcessingBonus = bonusId;
+  run.bonusOffer = null;
+  run.bonusProgress = 0;
+  run.message = `Сохранён бонус «${PROCESSING_BONUS_DATA[bonusId].label}».`;
+  return { run, activated: true, bonusId, reason: run.message };
+}
+
+/** Keeps the old stored bonus when a fresh two-card offer appears. */
+export function dismissProcessingBonusOffer(source: ConveyorRun): ConveyorRun {
+  const run = cloneConveyorRun(source);
+  run.bonusOffer = null;
+  run.bonusProgress = 0;
+  run.message = run.storedProcessingBonus
+    ? `Сохранён прежний бонус «${PROCESSING_BONUS_DATA[run.storedProcessingBonus].label}».`
+    : 'Предложение бонуса пропущено.';
+  return run;
+}
+
+/** Activates the single stored bonus; machine modifiers wait for zone entry. */
+export function activateProcessingBonus(
+  source: ConveyorRun,
+  now = source.elapsed,
+): ProcessingBonusResolution {
+  const run = cloneConveyorRun(source);
+  const bonusId = run.storedProcessingBonus;
+  if (!bonusId) {
+    return {
+      run,
+      activated: false,
+      bonusId: null,
+      reason: 'Сохранённого бонуса нет.',
+    };
+  }
+  if (
+    (bonusId === 'booster' || bonusId === 'damper') &&
+    run.nextMachineMultiplier !== 1
+  ) {
+    return {
+      run,
+      activated: false,
+      bonusId,
+      reason: 'Модификатор следующего станка уже заряжен.',
+    };
+  }
+
+  if (bonusId === 'booster') run.nextMachineMultiplier = 1.75;
+  if (bonusId === 'damper') run.nextMachineMultiplier = 0.5;
+  if (bonusId === 'boost')
+    run.overdriveUntil = now + PROCESSING_BONUS_DURATION_SECONDS;
+  if (bonusId === 'slow')
+    run.slowUntil = now + PROCESSING_BONUS_DURATION_SECONDS;
+  run.storedProcessingBonus = null;
+  run.message = PROCESSING_BONUS_DATA[bonusId].activeDetail;
+  releaseEarnedBonusOffer(run);
+  return { run, activated: true, bonusId, reason: run.message };
+}
+
+export function processingTransportMultiplier(
+  run: ConveyorRun,
+  now = run.elapsed,
+) {
+  const boost = now < run.overdriveUntil ? 1.55 : 1;
+  const slow = now < run.slowUntil ? 0.5 : 1;
+  return boost * slow;
+}
+
+/** Applies a visible machine transformation and consumes a queued modifier. */
+export function applyProcessingMachine(
+  source: ConveyorRun,
+  machineId: ProcessingMachineId,
+  exposure = 1,
+): ProcessingMachineResolution {
+  const run = cloneConveyorRun(source);
+  const effectMultiplier = run.nextMachineMultiplier;
+  const application = applyMachineEffect(run.workpiece, machineId, {
+    effectMultiplier,
+    exposure,
+  });
+  run.workpiece = application.state;
+  run.nextMachineMultiplier = 1;
+  run.lastMachineId = machineId;
+  run.heat = getProcessingVisualState(run.workpiece).heat01 * 100;
+  run.message = `${PROCESSING_BONUS_DATA.booster.label === '' ? '' : ''}${application.state.cracked ? 'Металл треснул' : `Пройден станок «${machineId}»`}.`;
+  return {
+    run,
+    machineId,
+    effectMultiplier,
+    crackRiskAdded: application.crackRiskAdded,
+  };
+}
+
+export function setProcessingLevel(
+  source: ConveyorRun,
+  level: ProcessingLevelId,
+): ConveyorRun {
+  const run = cloneConveyorRun(source);
+  const config = LEVEL_CONFIGS[level];
+  run.level = level;
+  run.factoryProgress = config.startAt;
+  run.stageIndex = 0;
+  run.stageProgress = 0;
+  run.processingLane = 'upper';
+  run.processingVariant = 0;
+  run.workpiece = createProcessingState();
+  run.target = cloneProcessingTarget(PROCESSING_LEVELS[level].target);
+  run.actionReady = false;
+  run.charge = 100;
+  run.correctAnswers = 0;
+  run.wrongAnswers = 0;
+  run.bonusProgress = 0;
+  run.bonusOffer = null;
+  run.storedProcessingBonus = null;
+  run.nextMachineMultiplier = 1;
+  run.lastMachineId = null;
+  run.slowUntil = 0;
+  run.overdriveUntil = 0;
+  run.message = `${PROCESSING_LEVELS[level].title}: обработай заготовку по допускам.`;
+  run.objective = 'Доставь металл в контроль качества';
+  return run;
 }

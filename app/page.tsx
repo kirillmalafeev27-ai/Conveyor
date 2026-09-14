@@ -1,50 +1,68 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  Anchor,
-  ArrowDown,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+} from 'react';
+import {
   ArrowLeft,
   ArrowLeftRight,
   ArrowRight,
-  ArrowUp,
   Bot,
+  Factory,
   Gauge,
   LoaderCircle,
+  PackageCheck,
   Power,
   RotateCcw,
   Settings2,
-  ShieldAlert,
   Sparkles,
+  Target,
   Timer,
   Trophy,
   Volume2,
   VolumeX,
+  Wrench,
   Zap,
 } from 'lucide-react';
 
-import { Button } from '@/components/ui/button';
 import { FactoryViewport } from '@/app/factory-viewport';
 import { useQuestionPool } from '@/app/use-question-pool';
+import { Button } from '@/components/ui/button';
 import {
-  BONUS_DATA,
-  BONUS_ORDER,
-  ROUTES,
   RUN_DURATION_SECONDS,
-  advanceAlongRoute,
-  allTerminalsComplete,
+  PROCESSING_BONUS_CORRECT_ANSWERS,
+  activateProcessingBonus,
+  chooseProcessingBonus,
+  cloneConveyorRun,
+  consumeProcessingAction,
   createRun,
+  decayProcessingImpulse,
+  dismissProcessingBonusOffer,
   formatClock,
-  getJunctionOptions,
-  nearestTerminal,
-  playerAtExit,
-  routeActionLabel,
-  routePose,
-  setPlayerRoute,
-  terminalAtPlayer,
-  type BonusId,
+  processingTransportMultiplier,
+  resolveProcessingQuiz,
+  setProcessingLevel,
   type ConveyorRun,
 } from '@/lib/conveyor-game';
+import {
+  LEVEL_CONFIGS,
+  PROCESSING_BONUS_DATA,
+  PROCESSING_LEVELS,
+  applyMachineEffect,
+  evaluateProcessingState,
+  getProcessingVisualState,
+  type FactorySection,
+  type ProcessingAction,
+  type ProcessingBonusId,
+  type ProcessingLevelId,
+  type ProcessingMachineId,
+  type ProcessingState,
+  type ProcessingTarget,
+} from '@/lib/processing-game';
 import {
   DEFAULT_LEARNING_SETTINGS,
   GRAMMAR_TOPIC_GROUPS,
@@ -57,19 +75,13 @@ import {
 } from '@/lib/learning-settings';
 
 const BONUS_ICONS = {
-  brake: Gauge,
-  overdrive: Zap,
-  reverse: RotateCcw,
-  anchor: Anchor,
-  transfer: ArrowLeftRight,
+  booster: Wrench,
+  damper: Gauge,
+  boost: Zap,
+  slow: Timer,
 } as const;
-const BONUS_TONES: Record<BonusId, string> = {
-  brake: 'cyan',
-  overdrive: 'amber',
-  reverse: 'violet',
-  anchor: 'blue',
-  transfer: 'green',
-};
+
+const FACTORY_LEVELS = [1, 2, 3, 4, 5] as const;
 
 type WebMcpContext = {
   registerTool: (
@@ -91,16 +103,16 @@ declare global {
   }
 }
 
-function snapshot(run: ConveyorRun): ConveyorRun {
-  return {
-    ...run,
-    routeHistory: [...run.routeHistory],
-    completed: { ...run.completed },
-    terminalOrder: [...run.terminalOrder],
-    bonuses: { ...run.bonuses },
-    cooldowns: { ...run.cooldowns },
-  };
-}
+type MachineRuntime = {
+  sectionId: string;
+  machineId: ProcessingMachineId;
+  multiplier: number;
+};
+
+const PRESS_HIT_STAGES = [0.3, 0.74] as const;
+
+const clamp = (value: number, minimum: number, maximum: number) =>
+  Math.max(minimum, Math.min(maximum, value));
 
 function safeJsonRecord(input: unknown) {
   return input && typeof input === 'object' && !Array.isArray(input)
@@ -108,13 +120,85 @@ function safeJsonRecord(input: unknown) {
     : {};
 }
 
+function sectionFor(
+  run: ConveyorRun,
+  predicate?: (section: FactorySection) => boolean,
+) {
+  const config = LEVEL_CONFIGS[run.level];
+  const effectiveLane =
+    run.level === 5 && run.processingVariant === 1
+      ? run.processingLane === 'upper'
+        ? 'lower'
+        : 'upper'
+      : run.processingLane;
+  return (
+    config.sections.find(
+      (section) =>
+        run.factoryProgress >= section.start &&
+        run.factoryProgress < section.end &&
+        (section.lane === 'both' || section.lane === effectiveLane) &&
+        (!predicate || predicate(section)),
+    ) ?? null
+  );
+}
+
+function committedForkFor(run: ConveyorRun) {
+  return (
+    LEVEL_CONFIGS[run.level].forks.find(
+      (fork) =>
+        run.factoryProgress >= fork.commitAt &&
+        run.factoryProgress < fork.mergeAt,
+    ) ?? null
+  );
+}
+
+function targetState(target: ProcessingTarget): ProcessingState {
+  const middle = (range: { min: number; max: number }) =>
+    (range.min + range.max) / 2;
+  return {
+    temperature: middle(target.temperature),
+    thickness: middle(target.thickness),
+    width: middle(target.width),
+    length: middle(target.length),
+    crackRisk: 0,
+    cracked: false,
+    machineHistory: [],
+  };
+}
+
+function PieceGlyph({
+  state,
+  ghost = false,
+}: {
+  state: ProcessingState;
+  ghost?: boolean;
+}) {
+  const visual = getProcessingVisualState(state);
+  const style = {
+    '--piece-length': clamp(visual.lengthScale, 0.62, 1.62),
+    '--piece-width': clamp(visual.widthScale, 0.7, 1.5),
+    '--piece-thickness': clamp(visual.thicknessScale, 0.48, 1.35),
+    '--piece-color': ghost ? '#77f4df' : visual.metalColor,
+    '--piece-glow': ghost ? 0.24 : visual.glow,
+  } as CSSProperties;
+  return (
+    <span
+      className={`piece-glyph ${ghost ? 'is-ghost' : ''} ${state.cracked ? 'is-cracked' : ''}`}
+      style={style}
+      aria-hidden="true"
+    />
+  );
+}
+
 export default function ConveyorGame() {
   const [initialRun] = useState(createRun);
   const runRef = useRef<ConveyorRun>(initialRun);
-  const [hud, setHud] = useState(() => snapshot(initialRun));
+  const [hud, setHud] = useState(() => cloneConveyorRun(initialRun));
   const [settings, setSettings] = useState<LearningSettings>(
     DEFAULT_LEARNING_SETTINGS,
   );
+  const [selectedFactoryLevel, setSelectedFactoryLevel] =
+    useState<ProcessingLevelId>(1);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [feedback, setFeedback] = useState('');
   const [recallAnswer, setRecallAnswer] = useState('');
@@ -126,6 +210,9 @@ export default function ConveyorGame() {
   const questionEpochRef = useRef(0);
   const recallAbortRef = useRef<AbortController | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
+  const machineRuntimeRef = useRef<MachineRuntime | null>(null);
+  const processedCyclesRef = useRef(new Set<string>());
+  const visitedSectionsRef = useRef(new Set<string>());
 
   const pool = useQuestionPool(settings, hud.phase === 'playing');
   const poolRef = useRef(pool);
@@ -176,7 +263,7 @@ export default function ConveyorGame() {
   );
 
   const sound = useCallback(
-    (kind: 'correct' | 'wrong' | 'action' | 'danger' | 'win') => {
+    (kind: 'correct' | 'wrong' | 'action' | 'machine' | 'win') => {
       if (!audioEnabled) return;
       const context = audioContextRef.current ?? new AudioContext();
       audioContextRef.current = context;
@@ -187,16 +274,16 @@ export default function ConveyorGame() {
         correct: 660,
         wrong: 154,
         action: 330,
-        danger: 92,
+        machine: 92,
         win: 820,
       };
       oscillator.type =
-        kind === 'wrong' || kind === 'danger' ? 'sawtooth' : 'triangle';
+        kind === 'wrong' || kind === 'machine' ? 'sawtooth' : 'triangle';
       oscillator.frequency.setValueAtTime(notes[kind], now);
       if (kind === 'win')
         oscillator.frequency.exponentialRampToValueAtTime(1240, now + 0.22);
       gain.gain.setValueAtTime(0.0001, now);
-      gain.gain.exponentialRampToValueAtTime(0.075, now + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.07, now + 0.015);
       gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.2);
       oscillator.connect(gain).connect(context.destination);
       oscillator.start(now);
@@ -205,10 +292,13 @@ export default function ConveyorGame() {
     [audioEnabled],
   );
 
-  const publishHud = useCallback(() => setHud(snapshot(runRef.current)), []);
+  const publishHud = useCallback(
+    () => setHud(cloneConveyorRun(runRef.current)),
+    [],
+  );
 
   const resetQuestion = useCallback(
-    (message = 'Новый вопрос. Импульс заряжен.') => {
+    (message = 'Новый вопрос. Фабрика продолжает работать.') => {
       if (nextLockedRef.current) return;
       nextLockedRef.current = true;
       questionEpochRef.current += 1;
@@ -231,158 +321,180 @@ export default function ConveyorGame() {
     [publishHud],
   );
 
-  const lose = useCallback(
-    (reason: string) => {
-      const run = runRef.current;
-      if (run.phase !== 'playing') return;
+  const finishRun = useCallback(() => {
+    const run = runRef.current;
+    if (run.phase !== 'playing') return;
+    const report = evaluateProcessingState(run.workpiece, run.target);
+    run.score += report.score * 12 + Math.round(run.timeLeft * 5);
+    if (report.complete) {
+      run.phase = 'won';
+      run.objective = 'Деталь принята контролем качества';
+      run.message = 'Форма и состояние металла совпали с эталоном.';
+      sound('win');
+    } else {
       run.phase = 'lost';
-      run.lossReason = reason;
-      run.objective = 'Смена окончена';
-      sound('danger');
-      publishHud();
-    },
-    [publishHud, sound],
-  );
+      run.lossReason = `Брак: ${report.issues.join(', ')}.`;
+      run.objective = 'Деталь отклонена';
+      sound('wrong');
+    }
+    publishHud();
+  }, [publishHud, sound]);
 
   useEffect(() => {
     let frame = 0;
     let last = performance.now();
     let accumulator = 0;
     let uiClock = 0;
-    const damage = (key: string, message: string) => {
-      const run = runRef.current;
-      if (run.elapsed < run.invulnerableUntil || run.lastHazardKey === key)
+
+    const finishPreviousMachine = () => {
+      const previous = machineRuntimeRef.current;
+      if (!previous || visitedSectionsRef.current.has(previous.sectionId))
         return;
-      run.lastHazardKey = key;
-      run.invulnerableUntil = run.elapsed + 2.1;
-      run.integrity -= 1;
-      run.streak = 0;
-      run.message = message;
-      sound('danger');
-      if (run.integrity <= 0) lose(message);
+      visitedSectionsRef.current.add(previous.sectionId);
+      runRef.current.workpiece.machineHistory.push(previous.machineId);
+      machineRuntimeRef.current = null;
     };
+
+    const applyContinuousMachine = (
+      run: ConveyorRun,
+      machine: ProcessingMachineId,
+      multiplier: number,
+      exposure: number,
+    ) => {
+      const history = [...run.workpiece.machineHistory];
+      const application = applyMachineEffect(run.workpiece, machine, {
+        effectMultiplier: multiplier,
+        exposure,
+      });
+      application.state.machineHistory = history;
+      run.workpiece = application.state;
+      run.lastMachineId = machine;
+      run.heat = getProcessingVisualState(run.workpiece).heat01 * 100;
+    };
+
     const step = (dt: number) => {
-      const run = runRef.current;
+      let run = runRef.current;
       if (run.phase !== 'playing') return;
       run.elapsed += dt;
+      run.machineTime += dt;
       run.timeLeft = Math.max(0, run.timeLeft - dt);
-      if (run.timeLeft <= 0)
-        return lose('Смена закончилась раньше, чем открылись ворота.');
-      if (run.terminalDeadline !== null && run.elapsed >= run.terminalDeadline)
-        return lose('Синхронизация терминалов сорвана.');
-      for (const bonus of BONUS_ORDER)
-        run.cooldowns[bonus] = Math.max(0, run.cooldowns[bonus] - dt);
-      run.charge = Math.max(0, run.charge - dt * (run.actionReady ? 4.5 : 3.3));
-      if (run.charge <= 0) {
-        run.streak = 0;
+      if (run.timeLeft <= 0) {
+        run.phase = 'lost';
+        run.lossReason = 'Смена закончилась до контроля качества.';
+        run.objective = 'Линия остановлена';
+        sound('wrong');
+        publishHud();
+        return;
+      }
+
+      const chargeBefore = run.charge;
+      run = decayProcessingImpulse(run, dt);
+      runRef.current = run;
+      if (chargeBefore > 0 && run.charge <= 0) {
         resetQuestion(
           run.actionReady
-            ? 'Команда сгорела — отвечай заново.'
+            ? 'Команда сгорела — нужен новый ответ.'
             : 'Импульс иссяк — новый вопрос.',
         );
+        return;
       }
 
-      const braking = run.elapsed < run.slowUntil;
-      const slow = braking ? 0.5 : 1;
-      const boost = run.elapsed < run.overdriveUntil ? 1.55 : 1;
-      const direction = run.elapsed < run.reverseUntil ? -1 : 1;
-      const anchored = run.elapsed < run.anchorUntil;
-      run.machineTime += dt * (braking ? 0.3 : 1);
-      const baseSpeed = ROUTES[run.routeId].speed;
-      if (!anchored) {
-        advanceAlongRoute(
-          run,
-          baseSpeed *
-            (run.completed.A ? 1.2 : 1) *
-            slow *
-            boost *
-            direction *
-            dt,
-        );
-      }
-
-      const inFurnace =
-        run.routeId === 'fork1-a-furnace' &&
-        run.routeProgress > 0.2 &&
-        run.routeProgress < 0.84;
-      run.heat = Math.max(
-        0,
-        Math.min(
-          100,
-          run.heat + (inFurnace ? (run.completed.B ? 5.4 : 10.8) : -13) * dt,
-        ),
+      const config = LEVEL_CONFIGS[run.level];
+      const speed =
+        config.baseBeltSpeed * processingTransportMultiplier(run, run.elapsed);
+      run.factoryProgress = Math.min(
+        config.finishAt,
+        run.factoryProgress + speed * dt,
       );
-      if (run.heat >= 100) return lose('Перегрев: вентиляция не справилась.');
-      const pressCycle = run.completed.A ? 7.4 : 5.4;
-      const pressPhase = (run.machineTime % pressCycle) / pressCycle;
-      if (
-        run.routeId === 'entry-press' &&
-        run.routeProgress > 0.28 &&
-        run.routeProgress < 0.7 &&
-        pressPhase > 0.82 &&
-        pressPhase < 0.96
-      )
-        damage(
-          `press-${Math.floor(run.machineTime / pressCycle)}`,
-          'Пресс задел корпус: целостность снижена.',
-        );
-      const inTurbine =
-        run.routeId === 'fork1-b-turbine' &&
-        run.routeProgress > 0.2 &&
-        run.routeProgress < 0.84;
-      if (inTurbine && !anchored) {
-        run.lateralOffset += (run.completed.B ? 0.92 : 0.58) * dt;
-      } else if (!inTurbine) {
-        run.lateralOffset *= Math.exp(-1.45 * dt);
-      }
-      if (Math.abs(run.lateralOffset) > 1.72) {
-        damage(
-          `turbine-edge-${Math.floor(run.machineTime / 1.8)}`,
-          'Воздушный поток прижал тебя к борту.',
-        );
-        run.lateralOffset = Math.sign(run.lateralOffset) * 0.78;
+      // The renderer keeps the proven straight conveyor coordinate system while
+      // the production model advances in world metres.
+      run.routeId = 'entry-press';
+      run.routeProgress = clamp(
+        run.factoryProgress / Math.max(1, config.finishAt),
+        0,
+        0.99,
+      );
+      const laneTarget = run.processingLane === 'upper' ? -1.28 : 1.28;
+      run.lateralOffset +=
+        (laneTarget - run.lateralOffset) * (1 - Math.exp(-dt * 5.4));
+      run.playerX = run.factoryProgress;
+      run.playerZ = run.lateralOffset;
+
+      const stage = sectionFor(run);
+      run.stageIndex = stage ? config.sections.indexOf(stage) : 0;
+      run.stageProgress = stage
+        ? clamp(
+            (run.factoryProgress - stage.start) / (stage.end - stage.start),
+            0,
+            1,
+          )
+        : 0;
+
+      const machineSection = sectionFor(
+        run,
+        (section) => section.kind === 'machine' && Boolean(section.machineId),
+      );
+      if (!machineSection?.machineId) {
+        finishPreviousMachine();
+      } else {
+        if (machineRuntimeRef.current?.sectionId !== machineSection.id) {
+          finishPreviousMachine();
+          machineRuntimeRef.current = {
+            sectionId: machineSection.id,
+            machineId: machineSection.machineId,
+            multiplier: run.nextMachineMultiplier,
+          };
+          run.nextMachineMultiplier = 1;
+          run.message = `Заготовка вошла в станок: ${machineSection.label}.`;
+        }
+        const runtime = machineRuntimeRef.current;
+        const zoneSeconds =
+          (machineSection.end - machineSection.start) / config.baseBeltSpeed;
+        if (runtime && runtime.machineId === machineSection.machineId) {
+          if (
+            runtime.machineId === 'furnace' ||
+            runtime.machineId === 'rollers' ||
+            runtime.machineId === 'cooling'
+          ) {
+            applyContinuousMachine(
+              run,
+              runtime.machineId,
+              runtime.multiplier,
+              dt / Math.max(1, zoneSeconds),
+            );
+          } else if (runtime.machineId === 'press') {
+            for (const [hitIndex, hitStage] of PRESS_HIT_STAGES.entries()) {
+              const key = `${runtime.sectionId}:press:${hitIndex}`;
+              if (
+                run.stageProgress >= hitStage &&
+                !processedCyclesRef.current.has(key)
+              ) {
+                processedCyclesRef.current.add(key);
+                applyContinuousMachine(run, 'press', runtime.multiplier, 1);
+                sound('machine');
+              }
+            }
+          } else if (runtime.machineId === 'cutter') {
+            const key = `${runtime.sectionId}:cut`;
+            if (
+              run.stageProgress > 0.48 &&
+              !processedCyclesRef.current.has(key)
+            ) {
+              processedCyclesRef.current.add(key);
+              applyContinuousMachine(run, 'cutter', runtime.multiplier, 1);
+              sound('machine');
+            }
+          }
+        }
       }
 
-      const sawSpeed = run.completed.C ? 1.38 : 0.94;
-      const sawOffset = Math.sin(run.machineTime * sawSpeed) * 1.42;
-      if (
-        run.routeId === 'fork2-saw' &&
-        run.routeProgress > 0.28 &&
-        run.routeProgress < 0.76 &&
-        Math.abs(run.lateralOffset - sawOffset) < 0.48
-      )
-        damage(
-          `saw-${Math.floor((run.machineTime * sawSpeed) / 1.3)}`,
-          'Лезвие пересекло твою полосу.',
-        );
-      const pistonCycle = 5.8;
-      const pistonPhase = (run.machineTime % pistonCycle) / pistonCycle;
-      const pistonIndex = Math.floor(run.machineTime / pistonCycle);
-      const pistonKey = `piston-${pistonIndex}`;
-      if (
-        !anchored &&
-        run.routeId === 'fork2-piston' &&
-        run.routeProgress > 0.27 &&
-        run.routeProgress < 0.78 &&
-        pistonPhase > 0.78 &&
-        pistonPhase < 0.93 &&
-        run.lastHazardKey !== pistonKey
-      ) {
-        run.lastHazardKey = pistonKey;
-        run.invulnerableUntil = run.elapsed + 0.9;
-        run.lateralOffset = pistonIndex % 2 === 0 ? 1.28 : -1.28;
-        advanceAlongRoute(run, 2.6);
-        run.message = 'Поршень перебросил тебя на соседнюю полосу.';
+      if (run.factoryProgress >= config.finishAt) {
+        finishPreviousMachine();
+        finishRun();
+        return;
       }
-      run.lateralOffset = Math.max(-1.72, Math.min(1.72, run.lateralOffset));
-      const pose = routePose(run.routeId, run.routeProgress);
-      const normalX = -Math.sin(pose.angle);
-      const normalZ = Math.cos(pose.angle);
-      run.playerX = pose.x + normalX * run.lateralOffset;
-      run.playerZ = pose.z + normalZ * run.lateralOffset;
-      if (run.elapsed >= run.invulnerableUntil) run.lastHazardKey = '';
-      if (run.elapsed < run.overdriveUntil) run.score += Math.round(3 * dt);
     };
+
     const tick = (now: number) => {
       const delta = Math.min(0.08, (now - last) / 1000);
       last = now;
@@ -400,18 +512,28 @@ export default function ConveyorGame() {
     };
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
-  }, [lose, publishHud, resetQuestion, sound]);
+  }, [finishRun, publishHud, resetQuestion, sound]);
 
   const startRun = useCallback(
-    (override?: Partial<LearningSettings>) => {
+    (
+      override?: Partial<LearningSettings>,
+      factoryLevel: ProcessingLevelId = selectedFactoryLevel,
+    ) => {
       if (override)
         setSettings((current) =>
           normalizeLearningSettings({ ...current, ...override }),
         );
-      const next = createRun();
+      let next = createRun();
+      next = setProcessingLevel(next, factoryLevel);
+      next.processingVariant =
+        factoryLevel === 5 && Math.random() >= 0.5 ? 1 : 0;
       next.phase = 'playing';
-      next.message = 'Ответь правильно — мир уже движется.';
+      next.timeLeft = RUN_DURATION_SECONDS;
+      next.message = 'Фабрика уже движется. Изготовь деталь по эталону.';
       runRef.current = next;
+      machineRuntimeRef.current = null;
+      processedCyclesRef.current.clear();
+      visitedSectionsRef.current.clear();
       questionEpochRef.current += 1;
       recallAbortRef.current?.abort();
       recallAbortRef.current = null;
@@ -422,62 +544,53 @@ export default function ConveyorGame() {
       setRecallAnswer('');
       setEvaluating(false);
       setSettingsOpen(false);
+      setSelectedFactoryLevel(factoryLevel);
       publishHud();
     },
-    [publishHud],
+    [publishHud, selectedFactoryLevel],
   );
-
-  const grantBonus = useCallback(() => {
-    const run = runRef.current;
-    const owned = BONUS_ORDER.reduce(
-      (sum, bonus) => sum + run.bonuses[bonus],
-      0,
-    );
-    if (owned >= 2) {
-      run.score += 120;
-      return 'слоты бонусов заполнены · +120';
-    }
-    const bonus = BONUS_ORDER[run.bonusCursor % BONUS_ORDER.length];
-    run.bonusCursor += 1;
-    run.bonuses[bonus] += 1;
-    return `получен бонус «${BONUS_DATA[bonus].label}»`;
-  }, []);
 
   const acceptCorrect = useCallback(
     (explanation: string) => {
-      const run = runRef.current;
-      if (run.phase !== 'playing' || run.actionReady || answerLockedRef.current)
+      const current = runRef.current;
+      if (
+        current.phase !== 'playing' ||
+        current.actionReady ||
+        answerLockedRef.current
+      )
         return;
       answerLockedRef.current = true;
-      run.actionReady = true;
-      run.streak += 1;
-      run.score += Math.round(160 + run.charge * 3 + run.streak * 35);
-      const reward = grantBonus();
-      run.message = `Верно: ${reward}. Выбери команду.`;
-      setFeedback(explanation || run.message);
+      const resolution = resolveProcessingQuiz(current, true);
+      resolution.run.score += Math.round(
+        150 + resolution.run.charge * 2 + resolution.run.streak * 28,
+      );
+      runRef.current = resolution.run;
+      setFeedback(explanation || resolution.run.message);
       sound('correct');
       publishHud();
     },
-    [grantBonus, publishHud, sound],
+    [publishHud, sound],
   );
 
   const wrongAnswer = useCallback(
     (message: string) => {
-      const run = runRef.current;
-      if (run.phase !== 'playing' || run.actionReady || answerLockedRef.current)
+      const current = runRef.current;
+      if (
+        current.phase !== 'playing' ||
+        current.actionReady ||
+        answerLockedRef.current
+      )
         return;
       answerLockedRef.current = true;
-      run.streak = 0;
-      run.score = Math.max(0, run.score - 60);
-      run.charge = Math.max(12, run.charge - 18);
-      run.message = message;
+      const resolution = resolveProcessingQuiz(current, false);
+      runRef.current = resolution.run;
       poolRef.current.releaseQuestion(questionRef.current);
       setFeedback(message);
       sound('wrong');
       publishHud();
       window.setTimeout(() => {
         if (runRef.current.phase === 'playing')
-          resetQuestion('Новый вопрос — соберись.');
+          resetQuestion('Новый вопрос. Производство не останавливалось.');
       }, 780);
     },
     [publishHud, resetQuestion, sound],
@@ -579,107 +692,58 @@ export default function ConveyorGame() {
   );
 
   const executeAction = useCallback(
-    (action: 'left' | 'right' | 'up' | 'down' | 'context') => {
-      const run = runRef.current;
-      if (run.phase !== 'playing') return false;
-      if (!run.actionReady) {
-        run.message = 'Сначала заработай команду правильным ответом.';
+    (action: ProcessingAction) => {
+      if (action === 'toggle-lane' && committedForkFor(runRef.current)) {
+        runRef.current.message =
+          'Ветка уже выбрана. Используй сдвиг назад или вперёд.';
+        setFeedback(runRef.current.message);
         publishHud();
         return false;
       }
-      const junction = getJunctionOptions(run);
-      const branchTarget =
-        action === 'up'
-          ? junction.up
-          : action === 'down'
-            ? junction.down
-            : null;
-      const crossTrackCost = 22;
-      const branchCost = run.completed.C ? 28 : 40;
-      const costs = {
-        left: 10,
-        right: 10,
-        up: branchTarget ? branchCost : crossTrackCost,
-        down: branchTarget ? branchCost : crossTrackCost,
-        // A correct answer is the entire terminal requirement. Docking must never
-        // look broken just because the earned impulse has already decayed.
-        context: 0,
-      };
-      const cost = costs[action];
-      if (run.charge < cost) {
-        run.message = `Не хватает импульса: нужно ${cost}%.`;
+      const resolution = consumeProcessingAction(runRef.current, action);
+      runRef.current = resolution.run;
+      if (!resolution.consumed) {
         publishHud();
         return false;
       }
-      if (action === 'context') {
-        if (playerAtExit(run)) {
-          run.charge -= cost;
-          run.phase = 'won';
-          run.objective = 'Ворота открыты';
-          run.score += Math.round(run.timeLeft * 20 + run.integrity * 500);
-          run.message = 'Смена пройдена. Все системы синхронизированы.';
-          sound('win');
-          publishHud();
-          return true;
-        }
-        const candidate = terminalAtPlayer(run);
-        if (!candidate) {
-          run.message = allTerminalsComplete(run)
-            ? 'Доберись до открытых ворот и нажми SPACE.'
-            : 'Доедь до дока A, B или C.';
-          publishHud();
-          return false;
-        }
-        run.charge -= cost;
-        run.completed[candidate.id] = true;
-        run.terminalOrder.push(candidate.id);
-        const count = run.terminalOrder.length;
-        run.score += 900 + count * 240;
-        run.terminalDeadline =
-          count === 1
-            ? run.elapsed + 75
-            : count === 2
-              ? run.elapsed + 65
-              : null;
-        run.objective =
-          count === 3
-            ? 'Пройди финальные секции и доберись до ворот'
-            : `Найди ещё ${3 - count} терминал${count === 1 ? 'а' : ''}`;
-        if (candidate.id === 'A') setPlayerRoute(run, 'a-merge', 0, true);
-        if (candidate.id === 'B') setPlayerRoute(run, 'b-merge', 0, true);
-        if (candidate.id === 'C') setPlayerRoute(run, 'c-exit', 0, true);
-        run.message = `${candidate.id} · ${candidate.label} активирован. Маршрут перестроен.`;
-      } else if (action === 'left' || action === 'right') {
-        run.charge -= cost;
-        // One earned forward command clears the complete press strike zone.
-        advanceAlongRoute(run, action === 'right' ? 12.2 : -4.8);
-        run.message =
-          action === 'right' ? 'Рывок по ходу ленты.' : 'Рывок против хода.';
-      } else {
-        run.charge -= cost;
-        if (branchTarget) {
-          run.queuedRouteId = branchTarget;
-          run.message = `Выбрано: ${routeActionLabel(branchTarget).toLowerCase()}.`;
-        } else {
-          run.lateralOffset = Math.max(
-            -1.65,
-            Math.min(
-              1.65,
-              run.lateralOffset + (action === 'up' ? 1.15 : -1.15),
-            ),
-          );
-          advanceAlongRoute(run, 0);
-          run.message =
-            action === 'up'
-              ? 'Сместился к верхнему борту.'
-              : 'Сместился к нижнему борту.';
+      if (resolution.longitudinalDelta !== 0) {
+        const config = LEVEL_CONFIGS[resolution.run.level];
+        const previousProgress = resolution.run.factoryProgress;
+        resolution.run.factoryProgress = clamp(
+          resolution.run.factoryProgress + resolution.longitudinalDelta,
+          config.startAt,
+          config.finishAt,
+        );
+        resolution.run.routeId = 'entry-press';
+        resolution.run.routeProgress = clamp(
+          resolution.run.factoryProgress / Math.max(1, config.finishAt),
+          0,
+          0.99,
+        );
+        resolution.run.playerX = resolution.run.factoryProgress;
+        if (resolution.longitudinalDelta > 0) {
+          for (const section of config.sections) {
+            if (section.kind !== 'machine' || section.machineId !== 'press')
+              continue;
+            for (const [hitIndex, hitStage] of PRESS_HIT_STAGES.entries()) {
+              const hitAt =
+                section.start + (section.end - section.start) * hitStage;
+              if (
+                previousProgress < hitAt &&
+                resolution.run.factoryProgress >= hitAt
+              ) {
+                processedCyclesRef.current.add(
+                  `${section.id}:press:${hitIndex}`,
+                );
+              }
+            }
+          }
         }
       }
-      run.actionReady = false;
       sound('action');
       publishHud();
       window.setTimeout(
-        () => resetQuestion('Команда выполнена. Следующий вопрос.'),
+        () => resetQuestion('Манёвр выполнен. Следующий вопрос.'),
         160,
       );
       return true;
@@ -687,82 +751,56 @@ export default function ConveyorGame() {
     [publishHud, resetQuestion, sound],
   );
 
-  const activateBonus = useCallback(
-    (bonus: BonusId) => {
-      const run = runRef.current;
-      if (run.phase !== 'playing') return false;
-      if (run.bonuses[bonus] <= 0) {
-        run.message = `«${BONUS_DATA[bonus].label}» ещё не заработан.`;
-        publishHud();
-        return false;
-      }
-      if (run.cooldowns[bonus] > 0) {
-        run.message = `«${BONUS_DATA[bonus].label}» перезаряжается.`;
-        publishHud();
-        return false;
-      }
-      run.bonuses[bonus] -= 1;
-      run.cooldowns[bonus] = BONUS_DATA[bonus].cooldown;
-      const now = run.elapsed;
-      if (bonus === 'brake') run.slowUntil = now + 6;
-      if (bonus === 'overdrive') run.overdriveUntil = now + 6;
-      if (bonus === 'reverse') run.reverseUntil = now + 5;
-      if (bonus === 'anchor') run.anchorUntil = now + 4;
-      if (bonus === 'transfer') {
-        const nearest = nearestTerminal(run);
-        const approach =
-          nearest?.terminal.id === 'A'
-            ? 'fork1-a-furnace'
-            : nearest?.terminal.id === 'B'
-              ? 'fork1-b-turbine'
-              : nearest?.terminal.id === 'C'
-                ? 'merge-c'
-                : null;
-        if (approach) {
-          run.routeHistory = [];
-          setPlayerRoute(run, approach, 0.32);
-        }
-        run.transferUntil = now + 1;
-      }
-      run.message = BONUS_DATA[bonus].activeDetail;
-      run.score += 40;
-      sound('action');
+  const selectBonus = useCallback(
+    (bonus: ProcessingBonusId) => {
+      const resolution = chooseProcessingBonus(runRef.current, bonus);
+      runRef.current = resolution.run;
+      if (resolution.activated) sound('action');
+      setFeedback(resolution.reason);
       publishHud();
-      return true;
     },
     [publishHud, sound],
   );
 
+  const keepStoredBonus = useCallback(() => {
+    runRef.current = dismissProcessingBonusOffer(runRef.current);
+    setFeedback(runRef.current.message);
+    publishHud();
+  }, [publishHud]);
+
+  const useStoredBonus = useCallback(() => {
+    const resolution = activateProcessingBonus(runRef.current);
+    runRef.current = resolution.run;
+    if (resolution.activated) sound('action');
+    setFeedback(resolution.reason);
+    publishHud();
+  }, [publishHud, sound]);
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
+      const key = event.key.toLowerCase();
       if (
-        target?.matches('input, select, textarea, button') ||
+        target?.matches('input, select, textarea, [contenteditable="true"]') ||
+        (target?.matches('button') && (key === ' ' || key === 'enter')) ||
         runRef.current.phase !== 'playing'
       )
         return;
-      const key = event.key.toLowerCase();
       if (settings.mode === 'recognition' && ['1', '2', '3', '4'].includes(key))
         chooseAnswer(Number(key) - 1);
-      else if (key === 'a' || key === 'arrowleft') executeAction('left');
-      else if (key === 'd' || key === 'arrowright') executeAction('right');
-      else if (key === 'w' || key === 'arrowup') executeAction('up');
-      else if (key === 's' || key === 'arrowdown') executeAction('down');
-      else if (key === ' ') executeAction('context');
-      else {
-        const bonus = BONUS_ORDER.find(
-          (id) => BONUS_DATA[id].key.toLowerCase() === key,
-        );
-        if (bonus) activateBonus(bonus);
-      }
-      if (
-        ['arrowleft', 'arrowright', 'arrowup', 'arrowdown', ' '].includes(key)
-      )
+      else if (key === 'a' || key === 'arrowleft')
+        executeAction('shift-backward');
+      else if (key === 'd' || key === 'arrowright')
+        executeAction('shift-forward');
+      else if (key === 'w' || key === 'arrowup' || key === ' ')
+        executeAction('toggle-lane');
+      else if (key === 'q') useStoredBonus();
+      if (['arrowleft', 'arrowright', 'arrowup', ' '].includes(key))
         event.preventDefault();
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [activateBonus, chooseAnswer, executeAction, settings.mode]);
+  }, [chooseAnswer, executeAction, settings.mode, useStoredBonus]);
 
   const webActionsRef = useRef({ startRun, chooseAnswer });
   useEffect(() => {
@@ -778,7 +816,7 @@ export default function ConveyorGame() {
           name: 'read_conveyor_status',
           title: 'Read Conveyor status',
           description:
-            'Read the current run, position, charge, hazards, terminal progress, and owned bonuses without changing the game.',
+            'Read the active manufacturing level, workpiece, impulse and target-match status without changing the game.',
           inputSchema: {
             type: 'object',
             properties: {},
@@ -789,15 +827,20 @@ export default function ConveyorGame() {
             const run = runRef.current;
             return {
               phase: run.phase,
-              timeLeft: Math.ceil(run.timeLeft),
-              route: run.routeId,
-              routeProgress: Math.round(run.routeProgress * 100),
-              x: Number(run.playerX.toFixed(1)),
-              charge: Math.round(run.charge),
+              factoryLevel: run.level,
+              progress: Math.round(run.factoryProgress),
+              lane: run.processingLane,
+              layoutVariant: run.processingVariant,
+              impulse: Math.round(run.charge),
               actionReady: run.actionReady,
-              terminals: run.completed,
-              bonuses: run.bonuses,
-              objective: run.objective,
+              nextMachineMultiplier: run.nextMachineMultiplier,
+              transportMultiplier: processingTransportMultiplier(
+                run,
+                run.elapsed,
+              ),
+              workpiece: run.workpiece,
+              quality: evaluateProcessingState(run.workpiece, run.target),
+              storedBonus: run.storedProcessingBonus,
             };
           },
         },
@@ -808,38 +851,35 @@ export default function ConveyorGame() {
           name: 'start_conveyor_run',
           title: 'Start Conveyor run',
           description:
-            'Start or restart the visible German-learning factory run, optionally choosing a CEFR level and practice mode.',
+            'Start the visible German-learning factory, optionally choosing CEFR and factory levels.',
           inputSchema: {
             type: 'object',
             properties: {
               level: { type: 'string', enum: ['A1', 'A2', 'B1', 'B2'] },
-              mode: { type: 'string', enum: ['recognition', 'recall'] },
+              factoryLevel: { type: 'integer', minimum: 1, maximum: 5 },
             },
             additionalProperties: false,
           },
           annotations: { readOnlyHint: false, untrustedContentHint: false },
           execute(input) {
             const source = safeJsonRecord(input);
-            const level =
+            const languageLevel =
               typeof source.level === 'string' &&
               LANGUAGE_LEVELS.includes(
                 source.level as (typeof LANGUAGE_LEVELS)[number],
               )
                 ? (source.level as LearningSettings['level'])
                 : undefined;
-            const mode =
-              source.mode === 'recognition' || source.mode === 'recall'
-                ? source.mode
-                : undefined;
-            webActionsRef.current.startRun({
-              ...(level ? { level } : {}),
-              ...(mode ? { mode } : {}),
-            });
-            return {
-              started: true,
-              level: level ?? settings.level,
-              mode: mode ?? settings.mode,
-            };
+            const requested = Number(source.factoryLevel);
+            const factoryLevel =
+              Number.isInteger(requested) && requested >= 1 && requested <= 5
+                ? (requested as ProcessingLevelId)
+                : selectedFactoryLevel;
+            webActionsRef.current.startRun(
+              languageLevel ? { level: languageLevel } : undefined,
+              factoryLevel,
+            );
+            return { started: true, factoryLevel };
           },
         },
         { signal: lifecycle.signal },
@@ -849,7 +889,7 @@ export default function ConveyorGame() {
           name: 'answer_conveyor_question',
           title: 'Answer current Conveyor question',
           description:
-            'Choose one visible multiple-choice answer by its one-based number. This changes score and may unlock one movement command.',
+            'Choose one visible multiple-choice answer by its one-based number.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -863,10 +903,6 @@ export default function ConveyorGame() {
             const value = Number(safeJsonRecord(input).answerNumber);
             if (!Number.isInteger(value) || value < 1 || value > 4)
               throw new Error('answerNumber must be an integer from 1 to 4');
-            if (runRef.current.phase !== 'playing')
-              throw new Error('No active run');
-            if (settings.mode !== 'recognition')
-              throw new Error('The current run uses recall mode');
             webActionsRef.current.chooseAnswer(value - 1);
             return { accepted: true, answerNumber: value };
           },
@@ -876,30 +912,46 @@ export default function ConveyorGame() {
     };
     void register().catch(() => {});
     return () => lifecycle.abort();
-  }, [settings.level, settings.mode]);
+  }, [selectedFactoryLevel]);
 
-  const terminalSeconds =
-    hud.terminalDeadline === null
-      ? null
-      : Math.max(0, hud.terminalDeadline - hud.elapsed);
-  const completedCount = Object.values(hud.completed).filter(Boolean).length;
-  const junctionOptions = getJunctionOptions(hud);
-  const dockedTerminal = terminalAtPlayer(hud);
-  const atExit = playerAtExit(hud);
-  const branchCost = hud.completed.C ? 28 : 40;
-  const upCost = junctionOptions.up ? branchCost : 22;
-  const downCost = junctionOptions.down ? branchCost : 22;
-  const upLabel = junctionOptions.up
-    ? routeActionLabel(junctionOptions.up)
-    : 'Сдвиг вверх';
-  const downLabel = junctionOptions.down
-    ? routeActionLabel(junctionOptions.down)
-    : 'Сдвиг вниз';
-  const contextLabel = atExit
-    ? 'Открыть ворота'
-    : dockedTerminal
-      ? `Терминал ${dockedTerminal.id}`
-      : 'Активировать';
+  const gameLevel = PROCESSING_LEVELS[hud.level];
+  const quality = evaluateProcessingState(hud.workpiece, hud.target);
+  const currentSection = sectionFor(hud);
+  const laneLocked = Boolean(committedForkFor(hud));
+  const targetPiece = targetState(hud.target);
+  const storedBonus = hud.storedProcessingBonus;
+  const storedBonusData = storedBonus
+    ? PROCESSING_BONUS_DATA[storedBonus]
+    : null;
+  const activeBonus =
+    hud.nextMachineMultiplier > 1
+      ? {
+          label: 'УСИЛИТЕЛЬ ЗАРЯЖЕН',
+          detail: 'сработает на следующем станке',
+          icon: Wrench,
+        }
+      : hud.nextMachineMultiplier < 1
+        ? {
+            label: 'ДЕМПФЕР ЗАРЯЖЕН',
+            detail: 'сработает на следующем станке',
+            icon: Gauge,
+          }
+        : hud.elapsed < hud.overdriveUntil
+          ? {
+              label: 'РАЗГОН АКТИВЕН',
+              detail: 'лента ускорена',
+              icon: Zap,
+            }
+          : hud.elapsed < hud.slowUntil
+            ? {
+                label: 'ЗАМЕДЛЕНИЕ АКТИВНО',
+                detail: 'лента замедлена',
+                icon: Timer,
+              }
+            : null;
+  const StoredBonusIcon = storedBonus
+    ? BONUS_ICONS[storedBonus]
+    : (activeBonus?.icon ?? PackageCheck);
 
   return (
     <main className="game-shell">
@@ -908,7 +960,7 @@ export default function ConveyorGame() {
           <FactoryViewport runRef={runRef} />
           <div className="world-vignette" />
           <div className="viewport-brand">
-            <Power />
+            <Factory />
             <span>CONVEYOR</span>
           </div>
           <div className="viewport-buttons">
@@ -927,33 +979,27 @@ export default function ConveyorGame() {
               {audioEnabled ? <Volume2 /> : <VolumeX />}
             </Button>
           </div>
-          <div
-            className={`viewport-clock ${terminalSeconds !== null && terminalSeconds < 12 ? 'is-critical' : ''}`}
-          >
+          <div className="viewport-clock">
             <Timer />
-            <span>{terminalSeconds === null ? 'СМЕНА' : 'СИНХРО'}</span>
-            <strong>{formatClock(terminalSeconds ?? hud.timeLeft)}</strong>
+            <span>УРОВЕНЬ {hud.level} · СМЕНА</span>
+            <strong>{formatClock(hud.timeLeft)}</strong>
           </div>
-          <div className="viewport-vitals">
-            <span aria-label={`Целостность ${hud.integrity} из 3`}>
-              {'◆'.repeat(hud.integrity)}
-              {'◇'.repeat(3 - hud.integrity)}
-            </span>
-            {hud.heat > 1 && (
-              <span className={hud.heat > 74 ? 'is-hot' : ''}>
-                НАГРЕВ {Math.round(hud.heat)}%
-              </span>
-            )}
+          <div className="target-blueprint" aria-label="Эталон детали">
+            <div className="target-heading">
+              <Target />
+              <span>ЭТАЛОН</span>
+            </div>
+            <PieceGlyph state={targetPiece} ghost />
+            <small>{gameLevel.title}</small>
           </div>
-          {dockedTerminal && (
-            <output className="dock-prompt">
-              <strong>ТЕРМИНАЛ {dockedTerminal.id}</strong>
-              <span>
-                {hud.actionReady
-                  ? 'Нажми SPACE, чтобы активировать'
-                  : 'Ответь правильно — затем нажми SPACE'}
-              </span>
-            </output>
+          {currentSection?.kind === 'fork' && (
+            <div className="fork-cue" aria-live="polite">
+              <span>РАЗВИЛКА ВПЕРЕДИ</span>
+              <strong>
+                Текущая линия —{' '}
+                {hud.processingLane === 'upper' ? 'верхняя' : 'нижняя'}
+              </strong>
+            </div>
           )}
         </section>
 
@@ -965,6 +1011,10 @@ export default function ConveyorGame() {
               <span>
                 {settings.level} ·{' '}
                 {settings.grammarTopic.toLocaleUpperCase('de-DE')}
+              </span>
+              <span className="factory-progress-label">
+                {currentSection?.label ??
+                  (hud.factoryProgress < 8 ? 'Подача' : 'Между станками')}
               </span>
             </div>
             <div className="question-panel">
@@ -980,79 +1030,67 @@ export default function ConveyorGame() {
               <div className="impulse-track">
                 <i style={{ width: `${hud.charge}%` }} />
               </div>
-              <small>−{hud.actionReady ? '4.5' : '3.3'}%/с</small>
+              <small>сгорает постоянно</small>
             </div>
+
             <div className="answer-slot">
               {hud.actionReady ? (
                 <div className="action-panel">
                   <div className="action-title">
                     <Sparkles />
                     <div>
-                      <span>ХОД ДОСТУПЕН</span>
-                      <strong>Один манёвр — выбирай сейчас</strong>
+                      <span>ОДНО ДЕЙСТВИЕ ДОСТУПНО</span>
+                      <strong>Выбери траекторию или момент</strong>
                     </div>
                   </div>
-                  <div className="movement-pad">
+                  <div className="processing-actions">
                     <Button
                       variant="outline"
-                      className="lane-up"
-                      onClick={() => executeAction('up')}
-                      disabled={hud.charge < upCost}
-                      aria-label={`${upLabel}, стоимость ${upCost}% импульса`}
+                      className="lane-action"
+                      disabled={laneLocked}
+                      onClick={() => executeAction('toggle-lane')}
                     >
                       <kbd>W</kbd>
-                      <ArrowUp />
-                      <span>{upLabel}</span>
-                      <small>{upCost}%</small>
+                      <ArrowLeftRight />
+                      <span>
+                        <strong>СМЕНИТЬ ЛИНИЮ</strong>
+                        <small>
+                          {laneLocked
+                            ? 'ветка уже выбрана'
+                            : hud.processingLane === 'upper'
+                              ? 'верхняя → нижняя'
+                              : 'нижняя → верхняя'}
+                        </small>
+                      </span>
                     </Button>
-                    <Button
-                      variant="outline"
-                      className="move-back"
-                      onClick={() => executeAction('left')}
-                      disabled={hud.charge < 10}
-                      aria-label="Рывок назад, стоимость 10% импульса"
+                    <div
+                      className="shift-action"
+                      role="group"
+                      aria-label="Сдвиг по ленте"
                     >
-                      <kbd>A</kbd>
-                      <ArrowLeft />
-                      <span>Назад</span>
-                      <small>10%</small>
-                    </Button>
-                    <Button
-                      variant="outline"
-                      className="context-action"
-                      onClick={() => executeAction('context')}
-                      disabled={!dockedTerminal && !atExit}
-                      aria-label={`${contextLabel}, доступно после верного ответа`}
-                    >
-                      <kbd>SPACE</kbd>
-                      <Power />
-                      <span>{contextLabel}</span>
-                      <small>ГОТОВО</small>
-                    </Button>
-                    <Button
-                      variant="outline"
-                      className="move-forward"
-                      onClick={() => executeAction('right')}
-                      disabled={hud.charge < 10}
-                      aria-label="Рывок вперёд, стоимость 10% импульса"
-                    >
-                      <kbd>D</kbd>
-                      <ArrowRight />
-                      <span>Вперёд</span>
-                      <small>10%</small>
-                    </Button>
-                    <Button
-                      variant="outline"
-                      className="lane-down"
-                      onClick={() => executeAction('down')}
-                      disabled={hud.charge < downCost}
-                      aria-label={`${downLabel}, стоимость ${downCost}% импульса`}
-                    >
-                      <kbd>S</kbd>
-                      <ArrowDown />
-                      <span>{downLabel}</span>
-                      <small>{downCost}%</small>
-                    </Button>
+                      <Button
+                        variant="outline"
+                        onClick={() => executeAction('shift-backward')}
+                      >
+                        <kbd>A</kbd>
+                        <ArrowLeft />
+                        <span>
+                          <strong>НАЗАД</strong>
+                          <small>дольше под машиной</small>
+                        </span>
+                      </Button>
+                      <Button
+                        variant="outline"
+                        onClick={() => executeAction('shift-forward')}
+                      >
+                        <span>
+                          <strong>ВПЕРЁД</strong>
+                          <small>быстрее из зоны</small>
+                        </span>
+                        <ArrowRight />
+                        <kbd>D</kbd>
+                      </Button>
+                    </div>
                   </div>
                 </div>
               ) : (
@@ -1106,41 +1144,94 @@ export default function ConveyorGame() {
             </div>
           </section>
 
-          <section className="bonus-dock" aria-labelledby="bonus-title">
-            <div className="dock-heading">
-              <span id="bonus-title">БОНУСЫ</span>
+          <section
+            className="bonus-dock processing-bonus"
+            aria-labelledby="bonus-title"
+          >
+            <div className="bonus-meter-row">
+              <span id="bonus-title">
+                {gameLevel.bonusesEnabled
+                  ? 'СТРАТЕГИЧЕСКИЙ БОНУС'
+                  : 'БОНУСЫ С УРОВНЯ 4'}
+              </span>
+              {activeBonus && (
+                <em className="active-bonus-chip">{activeBonus.label}</em>
+              )}
+              <div
+                className="bonus-meter"
+                aria-label={`Верных ответов до бонуса: ${hud.bonusProgress} из ${PROCESSING_BONUS_CORRECT_ANSWERS}`}
+              >
+                {Array.from({ length: PROCESSING_BONUS_CORRECT_ANSWERS }).map(
+                  (_, index) => (
+                    <i
+                      key={index}
+                      className={index < hud.bonusProgress ? 'is-filled' : ''}
+                    />
+                  ),
+                )}
+              </div>
             </div>
-            <div className="bonus-grid">
-              {BONUS_ORDER.map((bonus) => {
-                const Icon = BONUS_ICONS[bonus];
-                const owned = hud.bonuses[bonus];
-                const cooldown = hud.cooldowns[bonus];
-                const disabled =
-                  hud.phase !== 'playing' || owned <= 0 || cooldown > 0;
-                const reason =
-                  owned <= 0
-                    ? 'не заработан'
-                    : cooldown > 0
-                      ? `${Math.ceil(cooldown)} с`
-                      : BONUS_DATA[bonus].detail;
-                return (
+
+            {hud.bonusOffer ? (
+              <div className="bonus-offer">
+                <span>Выбери один. Мир не остановлен.</span>
+                <div>
+                  {hud.bonusOffer.map((bonus) => {
+                    const Icon = BONUS_ICONS[bonus];
+                    const data = PROCESSING_BONUS_DATA[bonus];
+                    return (
+                      <Button
+                        key={bonus}
+                        variant="outline"
+                        onClick={() => selectBonus(bonus)}
+                      >
+                        <Icon />
+                        <strong>{data.label}</strong>
+                        <small>{data.detail}</small>
+                      </Button>
+                    );
+                  })}
+                </div>
+                {storedBonus && (
                   <Button
-                    key={bonus}
-                    variant="outline"
-                    className={`bonus-button tone-${BONUS_TONES[bonus]} ${owned > 0 ? 'is-owned' : ''}`}
-                    disabled={disabled}
-                    onClick={() => activateBonus(bonus)}
-                    title={disabled ? reason : BONUS_DATA[bonus].detail}
+                    variant="ghost"
+                    className="keep-bonus"
+                    onClick={keepStoredBonus}
                   >
-                    <kbd>{BONUS_DATA[bonus].key}</kbd>
-                    <Icon aria-hidden="true" />
-                    <strong>{BONUS_DATA[bonus].label}</strong>
-                    <small>{reason}</small>
-                    {owned > 0 && <em>×{owned}</em>}
+                    Оставить «{storedBonusData?.label}»
                   </Button>
-                );
-              })}
-            </div>
+                )}
+              </div>
+            ) : (
+              <Button
+                variant="outline"
+                className={`stored-bonus ${storedBonus || activeBonus ? 'is-ready' : ''}`}
+                disabled={!storedBonus || hud.phase !== 'playing'}
+                onClick={useStoredBonus}
+              >
+                <kbd>Q</kbd>
+                <StoredBonusIcon />
+                <span>
+                  <strong>
+                    {storedBonusData?.label ??
+                      activeBonus?.label ??
+                      'Слот пуст'}
+                  </strong>
+                  <small>
+                    {storedBonusData?.detail ??
+                      activeBonus?.detail ??
+                      (gameLevel.bonusesEnabled
+                        ? 'три верных ответа откроют выбор'
+                        : 'сначала освой обработку металла')}
+                  </small>
+                </span>
+                {storedBonus ? (
+                  <em>ПРИМЕНИТЬ</em>
+                ) : activeBonus ? (
+                  <em>АКТИВНО</em>
+                ) : null}
+              </Button>
+            )}
           </section>
         </aside>
       </section>
@@ -1168,14 +1259,33 @@ export default function ConveyorGame() {
                       : 'умный резерв активен'}
                 </span>
               </div>
-              <h1 id="menu-title">Фабрика не ставится на паузу.</h1>
+              <h1 id="menu-title">Ты — металлическая заготовка.</h1>
               <p>
-                Правильный ответ даёт сгорающий импульс. Используй его сразу или
-                рискни подождать лучшую геометрию.
+                Фабрика непрерывно меняет тебя. Немецкие ответы дают редкие
+                вмешательства — довези до контроля деталь нужной формы.
               </p>
+              <div
+                className="factory-level-picker"
+                aria-label="Уровень фабрики"
+              >
+                {FACTORY_LEVELS.map((level) => (
+                  <Button
+                    key={level}
+                    type="button"
+                    variant="outline"
+                    className={
+                      selectedFactoryLevel === level ? 'is-selected' : ''
+                    }
+                    onClick={() => setSelectedFactoryLevel(level)}
+                  >
+                    <b>{level}</b>
+                    <span>{PROCESSING_LEVELS[level].title}</span>
+                  </Button>
+                ))}
+              </div>
               <div className="setup-grid">
                 <label>
-                  <span>Уровень</span>
+                  <span>Немецкий</span>
                   <select
                     value={settings.level}
                     onChange={(event) =>
@@ -1255,17 +1365,17 @@ export default function ConveyorGame() {
                 <span>
                   <b>01</b>
                   <strong>Ответ</strong>
-                  <small>создаёт импульс</small>
+                  <small>даёт одно действие</small>
                 </span>
                 <span>
                   <b>02</b>
                   <strong>Манёвр</strong>
-                  <small>тратит заряд</small>
+                  <small>линия или сдвиг</small>
                 </span>
                 <span>
                   <b>03</b>
-                  <strong>A · B · C</strong>
-                  <small>в любом порядке</small>
+                  <strong>Контроль</strong>
+                  <small>сравнит с эталоном</small>
                 </span>
               </div>
               <div className="menu-actions">
@@ -1277,8 +1387,11 @@ export default function ConveyorGame() {
                     Вернуться
                   </Button>
                 )}
-                <Button className="start-button" onClick={() => startRun()}>
-                  <Power /> {settingsOpen ? 'Начать заново' : 'Запустить смену'}
+                <Button
+                  className="start-button"
+                  onClick={() => startRun(undefined, selectedFactoryLevel)}
+                >
+                  <Power /> {settingsOpen ? 'Начать заново' : 'Запустить линию'}
                   <span>{RUN_DURATION_SECONDS} секунд</span>
                 </Button>
               </div>
@@ -1287,7 +1400,7 @@ export default function ConveyorGame() {
         </dialog>
       )}
 
-      {(hud.phase === 'won' || hud.phase === 'lost') && (
+      {(hud.phase === 'won' || hud.phase === 'lost') && !settingsOpen && (
         <dialog
           open
           className="result-overlay"
@@ -1295,23 +1408,34 @@ export default function ConveyorGame() {
           aria-labelledby="result-title"
         >
           <div className={`result-card ${hud.phase}`}>
-            {hud.phase === 'won' ? <Trophy /> : <ShieldAlert />}
+            {hud.phase === 'won' ? <Trophy /> : <PackageCheck />}
             <span>
-              {hud.phase === 'won' ? 'СМЕНА ЗАВЕРШЕНА' : 'ЛИНИЯ ОСТАНОВЛЕНА'}
+              {hud.phase === 'won' ? 'КОНТРОЛЬ ПРОЙДЕН' : 'ДЕТАЛЬ ОТКЛОНЕНА'}
             </span>
             <h1 id="result-title">
               {hud.phase === 'won'
-                ? 'Система синхронизирована.'
+                ? 'Заготовка совпала с эталоном.'
                 : hud.lossReason}
             </h1>
+            <div className="result-piece-compare">
+              <span>
+                <small>ТВОЯ ДЕТАЛЬ</small>
+                <PieceGlyph state={hud.workpiece} />
+              </span>
+              <ArrowRight />
+              <span>
+                <small>ЭТАЛОН</small>
+                <PieceGlyph state={targetPiece} ghost />
+              </span>
+            </div>
             <div className="result-stats">
               <span>
-                <small>Счёт</small>
-                <b>{hud.score}</b>
+                <small>Качество</small>
+                <b>{quality.score}%</b>
               </span>
               <span>
-                <small>Терминалы</small>
-                <b>{completedCount}/3</b>
+                <small>Верно</small>
+                <b>{hud.correctAnswers}</b>
               </span>
               <span>
                 <small>Время</small>
@@ -1322,8 +1446,23 @@ export default function ConveyorGame() {
               <Button variant="outline" onClick={() => setSettingsOpen(true)}>
                 <Settings2 /> Настройки
               </Button>
-              <Button onClick={() => startRun()}>
-                <RotateCcw /> Ещё смена
+              <Button
+                onClick={() => {
+                  const nextLevel =
+                    hud.phase === 'won' && hud.level < 5
+                      ? ((hud.level + 1) as ProcessingLevelId)
+                      : hud.level;
+                  startRun(undefined, nextLevel);
+                }}
+              >
+                {hud.phase === 'won' && hud.level < 5 ? (
+                  <PackageCheck />
+                ) : (
+                  <RotateCcw />
+                )}{' '}
+                {hud.phase === 'won' && hud.level < 5
+                  ? `Уровень ${hud.level + 1}`
+                  : 'Повторить'}
               </Button>
             </div>
           </div>

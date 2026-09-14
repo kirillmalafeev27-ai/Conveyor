@@ -10,7 +10,9 @@
     "build": "vinext build",
     "start": "wrangler dev --config dist/server/wrangler.json",
     "lint": "oxlint app lib server worker vite.config.ts",
-    "format": "oxfmt"
+    "format": "oxfmt",
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types scripts/route-smoke.mjs"
   },
   "dependencies": {
     "@base-ui/react": "1.7.0",

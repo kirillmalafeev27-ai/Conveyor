@@ -18,13 +18,14 @@ export const metadata: Metadata = {
     'Аркадная фабрика, где немецкий язык управляет каждым рискованным движением.',
   openGraph: {
     title: 'CONVEYOR — Deutsch unter Druck',
-    description: 'Три линии. Три терминала. Один сгорающий импульс.',
+    description:
+      'Металлическая заготовка проходит огромные станки, а каждый верный ответ даёт одно решающее вмешательство.',
     type: 'website',
     images: [
       {
-        url: '/og.webp',
-        width: 1536,
-        height: 1024,
+        url: '/visuals/conveyor_factory_kit_preview.png',
+        width: 1440,
+        height: 900,
         alt: 'CONVEYOR — Deutsch unter Druck',
       },
     ],
@@ -33,7 +34,7 @@ export const metadata: Metadata = {
     card: 'summary_large_image',
     title: 'CONVEYOR — Deutsch unter Druck',
     description: 'Аркадный немецкий на фабрике, которая не ставится на паузу.',
-    images: ['/og.webp'],
+    images: ['/visuals/conveyor_factory_kit_preview.png'],
   },
 };
 
