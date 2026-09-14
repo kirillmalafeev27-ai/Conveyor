@@ -63,7 +63,9 @@ import {
   type ProcessingState,
   type ProcessingTarget,
 } from '@/lib/processing-game';
-import { exerciseFormatOf } from '@/lib/questions';
+import { exerciseFormatOf, exerciseHint } from '@/lib/questions';
+
+import { playQuestionAudio, stopQuestionAudio } from './question-audio';
 import {
   DEFAULT_LEARNING_SETTINGS,
   GRAMMAR_TOPIC_GROUPS,
@@ -216,7 +218,8 @@ export default function ConveyorGame() {
   const visitedSectionsRef = useRef(new Set<string>());
 
   const pool = useQuestionPool(settings, hud.phase === 'playing');
-  const questionFormat = exerciseFormatOf(pool.question);
+  const questionFormat = exerciseFormatOf(pool.question, settings.mode);
+  const isListening = questionFormat.id === 'audio';
   const poolRef = useRef(pool);
   const questionRef = useRef(pool.question);
   useEffect(() => {
@@ -225,6 +228,18 @@ export default function ConveyorGame() {
   useEffect(() => {
     questionRef.current = pool.question;
   }, [pool.question]);
+
+  // A listening task is heard, not read, so it speaks as soon as it appears and
+  // falls silent the moment the run moves on.
+  useEffect(() => {
+    const spoken = pool.question.audioText;
+    if (hud.phase !== 'playing' || hud.actionReady || !spoken) {
+      stopQuestionAudio();
+      return;
+    }
+    void playQuestionAudio(spoken);
+    return () => stopQuestionAudio();
+  }, [hud.actionReady, hud.phase, pool.question.audioText, pool.question.id]);
 
   useEffect(() => {
     const restoreTimer = window.setTimeout(() => {
@@ -605,7 +620,7 @@ export default function ConveyorGame() {
         run.phase !== 'playing' ||
         run.actionReady ||
         answerLockedRef.current ||
-        settings.mode !== 'recognition'
+        settings.mode === 'recall'
       )
         return;
       const question = questionRef.current;
@@ -788,7 +803,7 @@ export default function ConveyorGame() {
         runRef.current.phase !== 'playing'
       )
         return;
-      if (settings.mode === 'recognition' && ['1', '2', '3', '4'].includes(key))
+      if (settings.mode !== 'recall' && ['1', '2', '3', '4'].includes(key))
         chooseAnswer(Number(key) - 1);
       else if (key === 'a' || key === 'arrowleft')
         executeAction('shift-backward');
@@ -1022,7 +1037,21 @@ export default function ConveyorGame() {
             <div className="question-panel">
               <p className="question-label">{pool.question.prompt}</p>
               <h1>{pool.question.context}</h1>
-              <p className="translation">{pool.question.translation}</p>
+              {isListening && pool.question.audioText ? (
+                <button
+                  type="button"
+                  className="audio-replay"
+                  onClick={() =>
+                    void playQuestionAudio(pool.question.audioText!)
+                  }
+                  aria-label="Прослушать немецкую фразу ещё раз"
+                >
+                  <Volume2 />
+                  ПОВТОРИТЬ
+                </button>
+              ) : (
+                <p className="translation">{pool.question.translation}</p>
+              )}
             </div>
             <div className="impulse-row">
               <div>
@@ -1098,9 +1127,9 @@ export default function ConveyorGame() {
               ) : (
                 <div className="answer-panel">
                   <p className="answer-hint">
-                    {questionFormat.hints[settings.mode]}
+                    {exerciseHint(questionFormat, settings.mode)}
                   </p>
-                  {settings.mode === 'recognition' ? (
+                  {settings.mode !== 'recall' ? (
                     <div className="answer-grid">
                       {pool.question.options.map((answer, index) => (
                         <Button

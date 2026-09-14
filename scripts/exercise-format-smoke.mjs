@@ -1,15 +1,21 @@
 import assert from 'node:assert/strict';
 
 import {
+  AUDIO_QUALITY_RULES,
   EXERCISE_FORMATS,
   TOPIC_RULES,
   exerciseFormatFor,
+  exerciseHint,
   qualityRules,
   topicRuleFor,
   usesEveryFragment,
   wordOrderFragments,
 } from '../lib/exercise-formats.ts';
-import { GRAMMAR_TOPICS } from '../lib/learning-settings.ts';
+import {
+  GRAMMAR_TOPICS,
+  QUESTION_MODES,
+  learningPoolKey,
+} from '../lib/learning-settings.ts';
 
 const offered = new Set(GRAMMAR_TOPICS);
 assert.deepEqual(
@@ -37,6 +43,46 @@ assert.deepEqual(
   'only the word-order topics may leave the gap format',
 );
 assert.equal(exerciseFormatFor('Dativ'), EXERCISE_FORMATS.gap);
+
+for (const topic of ['Dativ', 'Wortstellung im Hauptsatz']) {
+  assert.equal(
+    exerciseFormatFor(topic, 'audio'),
+    EXERCISE_FORMATS.audio,
+    'listening must replace the written shape whatever the grammar topic is',
+  );
+}
+assert.equal(exerciseFormatFor('Dativ', 'recall'), EXERCISE_FORMATS.gap);
+assert.ok(AUDIO_QUALITY_RULES.length >= 4);
+
+for (const format of Object.values(EXERCISE_FORMATS)) {
+  for (const mode of QUESTION_MODES) {
+    assert.ok(
+      exerciseHint(format, mode.id),
+      `${format.id} has no hint for ${mode.id}`,
+    );
+  }
+}
+
+const poolBase = {
+  level: 'A2',
+  lexicalTopic: 'Alltag & Routinen',
+  grammarTopic: 'Präsens',
+};
+assert.equal(
+  learningPoolKey({ ...poolBase, mode: 'recognition' }),
+  learningPoolKey({ ...poolBase, mode: 'recall' }),
+  'the two written modes deliberately share one pool',
+);
+assert.notEqual(
+  learningPoolKey({ ...poolBase, mode: 'audio' }),
+  learningPoolKey({ ...poolBase, mode: 'recognition' }),
+  'listening must keep a queue of its own',
+);
+assert.equal(
+  learningPoolKey({ ...poolBase, mode: 'audio' }),
+  learningPoolKey({ ...poolBase, grammarTopic: 'Passiv', mode: 'audio' }),
+  'the grammar topic must not split the listening queue',
+);
 
 const context = 'am Wochenende / wir / besuchen / unsere Großeltern';
 assert.deepEqual(wordOrderFragments(context), [

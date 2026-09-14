@@ -1188,6 +1188,32 @@ kbd {
   color: #71837f;
   font-size: 0.65rem;
 }
+.audio-replay {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin: 7px 0 clamp(12px, 2vh, 20px);
+  padding: 8px 14px;
+  border: 1px solid rgba(202, 235, 230, 0.17);
+  border-radius: 999px;
+  background: rgba(8, 18, 20, 0.8);
+  color: #eef8f5;
+  cursor: pointer;
+  font-size: 0.62rem;
+  font-weight: 760;
+  letter-spacing: 0.05em;
+  transition:
+    border-color 120ms ease,
+    background 120ms ease;
+}
+.audio-replay:hover {
+  border-color: #58f0d8;
+  background: rgba(14, 32, 34, 0.9);
+}
+.audio-replay svg {
+  width: 15px;
+  height: 15px;
+}
 .answer-hint {
   margin: 0 0 8px;
   color: #849994;

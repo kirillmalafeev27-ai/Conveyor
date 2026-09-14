@@ -113,6 +113,7 @@ export function useQuestionPool(settings: LearningSettings, enabled = true) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         level: settings.level,
+        mode: settings.mode,
         lexicalTopic: settings.lexicalTopic,
         grammarTopic: settings.grammarTopic,
         count: BATCH_SIZE,
@@ -189,6 +190,7 @@ export function useQuestionPool(settings: LearningSettings, enabled = true) {
     settings.grammarTopic,
     settings.level,
     settings.lexicalTopic,
+    settings.mode,
   ]);
 
   const nextReserve = useCallback(() => {
@@ -292,6 +294,7 @@ export function useQuestionPool(settings: LearningSettings, enabled = true) {
     if (!reservesByKeyRef.current.has(poolKey)) {
       const reserve = fallbackQuestionsFor({
         level: settings.level,
+        mode: settings.mode,
         lexicalTopic: settings.lexicalTopic,
         grammarTopic: settings.grammarTopic,
       });
@@ -335,6 +338,7 @@ export function useQuestionPool(settings: LearningSettings, enabled = true) {
     settings.grammarTopic,
     settings.level,
     settings.lexicalTopic,
+    settings.mode,
   ]);
 
   useEffect(() => {
