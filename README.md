@@ -41,6 +41,27 @@ npm run dev
 
 AITunnel вызывается только на сервере: для генерации пакетов и для смысловой проверки свободного ответа, если строгое локальное сравнение не сработало. Для локального production-режима скопируйте `.env.example` в `.env.local` и задайте `AITUNNEL_API_KEY`. `/api/questions/status` показывает только готовность серверной конфигурации, не раскрывая ключ, провайдера или модель.
 
+## Northflank
+
+Репозиторий готов к Combined Service из корневого `Dockerfile`:
+
+- build type: `Dockerfile`, context `/`;
+- public HTTP port: `3000`;
+- readiness/liveness: `GET /healthz` на порту `3000`;
+- runtime secret: `AITUNNEL_API_KEY`;
+- необязательные runtime variables перечислены в `.env.example`;
+- одна реплика для in-memory кэша пакетов (при масштабировании нужен общий Redis-lock/cache).
+- run command можно не задавать (`node server.js` из `CMD`), но `npm start` и `npm run start:northflank` внутри образа тоже работают.
+
+Контейнер собирает отдельный vinext standalone runtime с `DEPLOY_TARGET=node`, слушает `0.0.0.0:$PORT` и не содержит `.env`-файлы. Обычная сборка без `DEPLOY_TARGET=node` остаётся Cloudflare/Sites-сборкой, а `npm start` по-прежнему поднимает её через Wrangler.
+
+Если сервис собирается из репозитория, а не из `Dockerfile` (buildpack/Git-сборка), то:
+
+- build command: `npm ci --no-audit --no-fund && npm run build:node`;
+- run command: `npm run start:northflank`.
+
+`npm run start:northflank` подставляет `NODE_ENV=production`, `HOST=0.0.0.0` и `PORT=3000`, если платформа их не задала, и сам собирает standalone-выход, если сборка прошла без `DEPLOY_TARGET=node`.
+
 ## Проверка
 
 ```bash
@@ -48,4 +69,5 @@ npm run lint
 npm run typecheck
 npm test
 npm run build
+npm run build:node
 ```
