@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { buildStandalone } from './build-node.mjs';
+import { serveStandalone } from './northflank-serve.mjs';
 
 const standaloneServer = new URL(
   '../dist/standalone/server.js',
@@ -25,8 +26,4 @@ if (!existsSync(fileURLToPath(standaloneServer))) {
   if (status !== 0) process.exit(status);
 }
 
-process.env.NODE_ENV ??= 'production';
-process.env.HOST ??= '0.0.0.0';
-process.env.PORT ??= '3000';
-
-await import(standaloneServer.href);
+await serveStandalone(standaloneServer);
