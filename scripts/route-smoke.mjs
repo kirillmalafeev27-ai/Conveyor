@@ -18,6 +18,7 @@ import {
   PROCESSING_LEVELS,
   applyMachineEffect,
   createProcessingState,
+  describeProcessingRequirements,
   evaluateProcessingState,
   machineCyclePhase,
   machineCycleStrike,
@@ -200,6 +201,68 @@ assert.equal(
 assert.ok(
   afterEveryBeat.thickness < afterFirstBeat.thickness,
   'every beat has to bite, not just the first',
+);
+
+// The spec the player reads on the left has to say the same thing the grader
+// decides, or the panel teaches the wrong lesson.
+for (const levelId of [1, 2, 3, 4, 5]) {
+  const target = PROCESSING_LEVELS[levelId].target;
+  for (const state of [
+    createProcessingState(),
+    applyMachineEffect(createProcessingState(), 'furnace').state,
+    simulateProcessingPlan(PROCESSING_LEVELS[levelId].viablePlans[0].machines),
+  ]) {
+    const report = evaluateProcessingState(state, target);
+    const requirements = describeProcessingRequirements(state, target);
+    assert.equal(requirements.length, 5, 'every measurement needs a line');
+    for (const requirement of requirements) {
+      assert.ok(
+        requirement.label,
+        'a requirement without a label is unreadable',
+      );
+      assert.ok(
+        requirement.demand.trim(),
+        'a requirement must be stated in words',
+      );
+      assert.ok(
+        requirement.valueText.trim(),
+        'the current value must be printed',
+      );
+      assert.equal(
+        requirement.met,
+        report.matched[requirement.key],
+        `L${levelId} ${requirement.key}: the panel and the grader disagree`,
+      );
+      assert.equal(
+        requirement.correction === '',
+        requirement.met,
+        `L${levelId} ${requirement.key}: a failing measurement must say what is wrong`,
+      );
+      assert.ok(
+        requirement.range.max >= requirement.range.min,
+        'a tolerance window cannot be inverted',
+      );
+    }
+  }
+}
+
+// A cold blank on level one has to read as three separate problems, and the
+// level's own plan has to clear every one of them.
+const coldSpec = describeProcessingRequirements(
+  createProcessingState(),
+  PROCESSING_LEVELS[1].target,
+);
+assert.deepEqual(
+  coldSpec.filter((requirement) => !requirement.met).map((r) => r.key),
+  ['temperature', 'thickness', 'width'],
+);
+const finishedSpec = describeProcessingRequirements(
+  simulateProcessingPlan(PROCESSING_LEVELS[1].viablePlans[0].machines),
+  PROCESSING_LEVELS[1].target,
+);
+assert.ok(
+  finishedSpec.every((requirement) => requirement.met),
+  'the level plan must satisfy every stated requirement',
 );
 
 // The press is survivable only because one shift forward clears the beats that

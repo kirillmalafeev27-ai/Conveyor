@@ -54,6 +54,7 @@ import {
   PROCESSING_BONUS_DATA,
   PROCESSING_LEVELS,
   applyMachineEffect,
+  describeProcessingRequirements,
   evaluateProcessingState,
   getProcessingVisualState,
   type FactorySection,
@@ -61,6 +62,7 @@ import {
   type ProcessingBonusId,
   type ProcessingLevelId,
   type ProcessingMachineId,
+  type ProcessingRequirement,
   type ProcessingState,
   type ProcessingTarget,
 } from '@/lib/processing-game';
@@ -189,6 +191,100 @@ function PieceGlyph({
       style={style}
       aria-hidden="true"
     />
+  );
+}
+
+/**
+ * The window a measurement has to land in, drawn to scale, with a marker for
+ * where the part actually is. The scale always contains both, so a value far
+ * outside the tolerance still shows which side it is out on.
+ */
+function ToleranceBar({ requirement }: { requirement: ProcessingRequirement }) {
+  const { range, value } = requirement;
+  const padding = Math.max((range.max - range.min) * 1.35, 0.5);
+  // None of these measurements can go negative, so a one-sided limit like the
+  // crack risk starts its scale at zero instead of showing phantom headroom.
+  const low = Math.max(0, Math.min(range.min - padding, value));
+  const high = Math.max(range.max + padding, value);
+  const span = Math.max(high - low, 1e-6);
+  const at = (point: number) => ((point - low) / span) * 100;
+  const windowStart = at(range.min);
+  return (
+    <span className="tolerance-bar" aria-hidden="true">
+      <i
+        className="tolerance-window"
+        style={{
+          left: `${windowStart}%`,
+          width: `${at(range.max) - windowStart}%`,
+        }}
+      />
+      <b className="tolerance-marker" style={{ left: `${at(value)}%` }} />
+    </span>
+  );
+}
+
+function TargetSpec({
+  title,
+  requirements,
+  workpiece,
+  targetPiece,
+  score,
+}: {
+  title: string;
+  requirements: ProcessingRequirement[];
+  workpiece: ProcessingState;
+  targetPiece: ProcessingState;
+  score: number;
+}) {
+  return (
+    <div className="target-blueprint" aria-label="Требования к детали">
+      <div className="target-heading">
+        <Target />
+        <span>ЗАДАНИЕ</span>
+        <b>{score}%</b>
+      </div>
+      <p className="target-title">{title}</p>
+      <div className="target-compare">
+        <span>
+          <small>СЕЙЧАС</small>
+          <PieceGlyph state={workpiece} />
+        </span>
+        <span>
+          <small>ЭТАЛОН</small>
+          <PieceGlyph state={targetPiece} ghost />
+        </span>
+      </div>
+      <ul className="target-metrics">
+        {requirements.map((requirement) => (
+          <li
+            key={requirement.key}
+            className={requirement.met ? 'is-met' : 'is-off'}
+          >
+            <span className="metric-head">
+              <b>{requirement.label}</b>
+              <em>{requirement.valueText}</em>
+            </span>
+            <ToleranceBar requirement={requirement} />
+            <small>
+              {requirement.met ? 'в допуске' : requirement.correction}
+            </small>
+          </li>
+        ))}
+      </ul>
+      <div className="target-demands">
+        <span>ТРЕБОВАНИЯ</span>
+        <ol>
+          {requirements.map((requirement) => (
+            <li
+              key={requirement.key}
+              className={requirement.met ? 'is-met' : 'is-off'}
+            >
+              {requirement.demand}
+            </li>
+          ))}
+        </ol>
+      </div>
+    </div>
   );
 }
 
@@ -937,6 +1033,10 @@ export default function ConveyorGame() {
   const currentSection = sectionFor(hud);
   const laneLocked = Boolean(committedForkFor(hud));
   const targetPiece = targetState(hud.target);
+  const requirements = describeProcessingRequirements(
+    hud.workpiece,
+    hud.target,
+  );
   const storedBonus = hud.storedProcessingBonus;
   const storedBonusData = storedBonus
     ? PROCESSING_BONUS_DATA[storedBonus]
@@ -1002,14 +1102,13 @@ export default function ConveyorGame() {
             <span>УРОВЕНЬ {hud.level} · СМЕНА</span>
             <strong>{formatClock(hud.timeLeft)}</strong>
           </div>
-          <div className="target-blueprint" aria-label="Эталон детали">
-            <div className="target-heading">
-              <Target />
-              <span>ЭТАЛОН</span>
-            </div>
-            <PieceGlyph state={targetPiece} ghost />
-            <small>{gameLevel.title}</small>
-          </div>
+          <TargetSpec
+            title={gameLevel.title}
+            requirements={requirements}
+            workpiece={hud.workpiece}
+            targetPiece={targetPiece}
+            score={quality.score}
+          />
           {currentSection?.kind === 'fork' && (
             <div className="fork-cue" aria-live="polite">
               <span>РАЗВИЛКА ВПЕРЕДИ</span>

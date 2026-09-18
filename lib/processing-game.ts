@@ -904,6 +904,126 @@ export function applyMachineEffect(
 const inRange = (value: number, range: NumericRange) =>
   value >= range.min && value <= range.max;
 
+export type ProcessingRequirementKey =
+  | 'temperature'
+  | 'thickness'
+  | 'width'
+  | 'length'
+  | 'crackRisk';
+
+/**
+ * One line of the level's acceptance spec: the window a measurement has to land
+ * in, where it sits right now, and both of those in words. The panel draws its
+ * scales and prints its wording from this, so a target change cannot leave the
+ * two disagreeing.
+ */
+export type ProcessingRequirement = {
+  key: ProcessingRequirementKey;
+  label: string;
+  unit: string;
+  range: NumericRange;
+  value: number;
+  /** The current value, already formatted for display with its unit. */
+  valueText: string;
+  met: boolean;
+  /** What has to be achieved, as an instruction. */
+  demand: string;
+  /** What is wrong right now; empty once the measurement is in the window. */
+  correction: string;
+};
+
+function formatMeasure(value: number) {
+  const rounded = Math.round(value * 10) / 10;
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+}
+
+function formatRange(range: NumericRange, unit: string) {
+  return `${formatMeasure(range.min)}–${formatMeasure(range.max)} ${unit}`;
+}
+
+export function describeProcessingRequirements(
+  state: ProcessingState,
+  target: ProcessingTarget,
+): ProcessingRequirement[] {
+  const dimension = (
+    key: Exclude<ProcessingRequirementKey, 'crackRisk'>,
+    label: string,
+    unit: string,
+    demandVerb: string,
+    tooLow: string,
+    tooHigh: string,
+  ): ProcessingRequirement => {
+    const range = target[key];
+    const value = state[key];
+    return {
+      key,
+      label,
+      unit,
+      range,
+      value,
+      valueText: `${formatMeasure(value)} ${unit}`,
+      met: inRange(value, range),
+      demand: `${demandVerb} ${formatRange(range, unit)}`,
+      correction: value < range.min ? tooLow : value > range.max ? tooHigh : '',
+    };
+  };
+
+  const crackRange: NumericRange = { min: 0, max: target.maxCrackRisk };
+  const crackMet =
+    state.crackRisk <= target.maxCrackRisk &&
+    (!target.rejectCracked || !state.cracked);
+
+  return [
+    dimension(
+      'temperature',
+      'Температура',
+      '°C',
+      'Разогреть до',
+      'холодная — дольше в печи',
+      'перегрета — нужно охлаждение',
+    ),
+    dimension(
+      'thickness',
+      'Толщина',
+      'мм',
+      'Сплющить до',
+      'перепрессована — тоньше допуска',
+      'толстая — нужен удар пресса',
+    ),
+    dimension(
+      'width',
+      'Ширина',
+      'мм',
+      'Раскатать в ширину',
+      'узкая — нужен пресс',
+      'широкая — развело сверх допуска',
+    ),
+    dimension(
+      'length',
+      'Длина',
+      'мм',
+      'Вытянуть в длину',
+      'короткая — нужны вальцы',
+      'длинная — под резак',
+    ),
+    {
+      key: 'crackRisk',
+      label: 'Трещины',
+      unit: '%',
+      range: crackRange,
+      value: state.crackRisk,
+      valueText: `${formatMeasure(state.crackRisk)} %`,
+      met: crackMet,
+      demand: `Удержать риск трещин до ${formatMeasure(target.maxCrackRisk)} %`,
+      correction: state.cracked
+        ? 'трещина пошла — деталь уже брак'
+        : state.crackRisk > target.maxCrackRisk
+          ? 'риск выше допуска — не бей по холодному'
+          : '',
+    },
+  ];
+}
+
 export function evaluateProcessingState(
   state: ProcessingState,
   target: ProcessingTarget,
