@@ -10,6 +10,8 @@ import {
   ROUTES,
   ROUTE_ORDER,
   TERMINALS,
+  machineCyclePhase,
+  machineCycleStrike,
   routeLength,
   routePose,
   type ConveyorRun,
@@ -1264,6 +1266,7 @@ export function FactoryViewport({
 
     let frame = 0;
     const clock = new THREE.Clock();
+    const passageByMachine = new Map<ProcessingMachineId, number>();
     const cameraTarget = new THREE.Vector3(startPose.x + 7.2, 0.9, startPose.z);
     const desiredCamera = new THREE.Vector3();
     const desiredTarget = new THREE.Vector3();
@@ -1511,47 +1514,66 @@ export function FactoryViewport({
       camera.position.lerp(desiredCamera, 0.085);
       camera.lookAt(cameraTarget);
 
-      const pressCycle = 5.2;
-      const pressPhase = (run.machineTime % pressCycle) / pressCycle;
-      const strike =
-        pressPhase > 0.76
-          ? Math.sin(Math.min(1, (pressPhase - 0.76) / 0.24) * Math.PI)
+      // While the part is inside a machine, that machine's rhythm is read off
+      // the passage rather than a clock of its own: three cycles from entry to
+      // exit, whatever the zone's length or the belt's speed. That is what
+      // makes the beats countable, so the one action the answer buys can be
+      // timed against them. An idle machine keeps its old free-running look.
+      passageByMachine.clear();
+      for (const zone of parts.processingZones) {
+        if (zone.level !== level) continue;
+        if (zone.lane !== 'both' && zone.lane !== effectiveLane) continue;
+        const local =
+          (run.factoryProgress - zone.start) / (zone.end - zone.start);
+        if (local < 0 || local > 1) continue;
+        passageByMachine.set(zone.machineId, local);
+      }
+      const cyclePhase = (
+        machineId: ProcessingMachineId,
+        idleSeconds: number,
+      ) => {
+        const local = passageByMachine.get(machineId);
+        return local === undefined
+          ? (run.machineTime % idleSeconds) / idleSeconds
+          : machineCyclePhase(local);
+      };
+
+      const idlePressPhase = (run.machineTime % 5.2) / 5.2;
+      const idlePressStrike =
+        idlePressPhase > 0.76
+          ? Math.sin(Math.min(1, (idlePressPhase - 0.76) / 0.24) * Math.PI)
           : 0;
       for (const press of parts.presses) {
         const laneMatches =
           press.lane === 'both' || press.lane === effectiveLane;
         const localProgress =
           (run.factoryProgress - press.start) / (press.end - press.start);
-        const passageStrike = Math.max(
-          ...[0.3, 0.74].map((hitStage) =>
-            THREE.MathUtils.clamp(
-              1 - Math.abs(localProgress - hitStage) / 0.075,
-              0,
-              1,
-            ),
-          ),
-        );
         const rigStrike =
           press.level === level &&
           laneMatches &&
           localProgress >= 0 &&
           localProgress <= 1
-            ? passageStrike
-            : strike;
+            ? machineCycleStrike(localProgress, 0.075)
+            : idlePressStrike;
         if (press.ram && press.ramY !== undefined)
           press.ram.position.y = press.ramY - rigStrike * 2.55;
         if (press.plate && press.plateY !== undefined)
           press.plate.position.y = press.plateY - rigStrike * 2.55;
       }
 
+      // Rollers never slam, so their cycle reads as three surges of bite.
+      const rollerBite =
+        0.05 +
+        ((1 - Math.cos(cyclePhase('rollers', 2.4) * Math.PI * 2)) / 2) * 0.06;
       for (const roller of parts.rollerMeshes)
-        roller.object.rotateX(roller.direction * 0.08);
+        roller.object.rotateX(roller.direction * rollerBite);
 
+      const coolingPhase = cyclePhase('cooling', 1.75);
       for (const effect of parts.coolingEffects) {
-        const wave = Math.sin(time * 3.6 + effect.phase * Math.PI * 2);
+        const wave = Math.sin((coolingPhase + effect.phase) * Math.PI * 2);
         if (effect.steam) {
           effect.object.position.y =
-            effect.baseY + ((time * 0.36 + effect.phase) % 1) * 0.9;
+            effect.baseY + ((coolingPhase + effect.phase) % 1) * 0.9;
           effect.object.scale
             .copy(effect.baseScale)
             .multiplyScalar(0.9 + ((wave + 1) / 2) * 0.34);
@@ -1561,17 +1583,22 @@ export function FactoryViewport({
         }
       }
 
+      // Three sweeps, and the cut lands on the middle one, where the carriage
+      // is crossing the part.
+      const cutterTravel =
+        Math.sin(cyclePhase('cutter', 3.7) * Math.PI * 2) * 2.35;
       for (const cutter of parts.cutters) {
         cutter.blade?.rotateZ(-0.22);
-        const travel = Math.sin(run.machineTime * 1.7) * 2.35;
         if (cutter.carriage && cutter.carriageX !== undefined)
-          cutter.carriage.position.x = cutter.carriageX + travel;
+          cutter.carriage.position.x = cutter.carriageX + cutterTravel;
         if (cutter.blade && cutter.bladeX !== undefined)
-          cutter.blade.position.x = cutter.bladeX + travel;
+          cutter.blade.position.x = cutter.bladeX + cutterTravel;
       }
 
+      const furnaceGlow =
+        2.7 + Math.sin(cyclePhase('furnace', 0.87) * Math.PI * 2) * 0.55;
       for (const material of parts.furnaceGlow)
-        material.emissiveIntensity = 2.7 + Math.sin(time * 7.2) * 0.55;
+        material.emissiveIntensity = furnaceGlow;
 
       const sawSpeed = run.completed.C ? 1.38 : 0.94;
       const sawOffset = Math.sin(run.machineTime * sawSpeed) * 1.42;
@@ -1631,14 +1658,12 @@ export function FactoryViewport({
           run.factoryProgress <= zone.end + 1;
         const zoneProgress =
           (run.factoryProgress - zone.start) / (zone.end - zone.start);
-        const pressIsStriking = [0.3, 0.74].some(
-          (hitStage) => Math.abs(zoneProgress - hitStage) < 0.11,
-        );
+        const beatIsLanding = machineCycleStrike(zoneProgress, 0.11) > 0;
         const machineActive =
           zone.level === level &&
           laneMatches &&
           approaching &&
-          (zone.machineId !== 'press' || pressIsStriking);
+          (zone.machineId !== 'press' || beatIsLanding);
         zone.mesh.material.opacity = pulse(machineActive, index * 0.7);
       }
 

@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 
 import {
+  EARNED_ACTION_DECAY_PER_SECOND,
+  PROCESSING_FORWARD_SHIFT,
+  QUIZ_IMPULSE_DECAY_PER_SECOND,
   activateProcessingBonus,
   chooseProcessingBonus,
   consumeProcessingAction,
@@ -10,10 +13,14 @@ import {
 } from '../lib/conveyor-game.ts';
 import {
   LEVEL_CONFIGS,
+  MACHINE_CYCLES_PER_PASSAGE,
+  MACHINE_CYCLE_STAGES,
   PROCESSING_LEVELS,
   applyMachineEffect,
   createProcessingState,
   evaluateProcessingState,
+  machineCyclePhase,
+  machineCycleStrike,
   simulateProcessingPlan,
 } from '../lib/processing-game.ts';
 
@@ -134,5 +141,91 @@ for (const levelId of [1, 2, 3, 4, 5]) {
     );
   }
 }
+
+// Every machine runs three cycles per passage, evenly spaced, and works at the
+// middle of each one — the rhythm the player counts and times an action against.
+assert.equal(MACHINE_CYCLES_PER_PASSAGE, 3);
+assert.equal(MACHINE_CYCLE_STAGES.length, MACHINE_CYCLES_PER_PASSAGE);
+for (const [index, stage] of MACHINE_CYCLE_STAGES.entries()) {
+  assert.ok(stage > 0 && stage < 1, 'a beat may not land on the zone edge');
+  assert.equal(
+    Number(stage.toFixed(6)),
+    Number(((index + 0.5) / MACHINE_CYCLES_PER_PASSAGE).toFixed(6)),
+    'beats must sit at the centre of evenly spaced cycles',
+  );
+  assert.equal(
+    machineCycleStrike(stage, 0.075),
+    1,
+    'a beat peaks at its stage',
+  );
+  assert.equal(
+    Number(machineCyclePhase(stage).toFixed(6)),
+    0.5,
+    'the cycle is halfway through when it does its work',
+  );
+}
+assert.equal(
+  machineCycleStrike(0, 0.075),
+  0,
+  'entering a zone must not strike',
+);
+assert.equal(machineCycleStrike(1, 0.075), 0, 'leaving a zone must not strike');
+assert.equal(machineCyclePhase(0), 0);
+// Three cycles means the phase returns to its start twice inside the passage.
+for (const boundary of [1 / 3, 2 / 3]) {
+  assert.ok(
+    machineCyclePhase(boundary) < 1e-9,
+    `a new cycle must start at ${boundary}`,
+  );
+}
+
+// What the three beats mean for the part: riding the whole press zone out is
+// over-pressing, so the action exists to leave after the first one.
+const hotBlank = applyMachineEffect(createProcessingState(), 'furnace').state;
+const afterFirstBeat = applyMachineEffect(hotBlank, 'press').state;
+const afterEveryBeat = MACHINE_CYCLE_STAGES.reduce(
+  (state) => applyMachineEffect(state, 'press').state,
+  hotBlank,
+);
+assert.equal(
+  evaluateProcessingState(afterFirstBeat, PROCESSING_LEVELS[1].target).complete,
+  true,
+  'leaving after the first beat must still produce an acceptable part',
+);
+assert.equal(
+  evaluateProcessingState(afterEveryBeat, PROCESSING_LEVELS[1].target).complete,
+  false,
+  'taking all three beats must reject the part',
+);
+assert.ok(
+  afterEveryBeat.thickness < afterFirstBeat.thickness,
+  'every beat has to bite, not just the first',
+);
+
+// The press is survivable only because one shift forward clears the beats that
+// are left; a longer press zone than the shift would trap the part.
+for (const [levelId, config] of Object.entries(LEVEL_CONFIGS)) {
+  for (const section of config.sections) {
+    if (section.kind !== 'machine' || section.machineId !== 'press') continue;
+    const length = section.end - section.start;
+    const firstBeatAt = section.start + length * MACHINE_CYCLE_STAGES[0];
+    assert.ok(
+      firstBeatAt + PROCESSING_FORWARD_SHIFT >= section.end,
+      `L${levelId} press: one shift forward must clear the remaining beats`,
+    );
+  }
+}
+
+// Impulse burns fast enough to press the answer, and faster still once the
+// action is earned and waiting to be spent.
+assert.ok(
+  EARNED_ACTION_DECAY_PER_SECOND > QUIZ_IMPULSE_DECAY_PER_SECOND,
+  'a held action must burn faster than the question itself',
+);
+const answerSeconds = 100 / QUIZ_IMPULSE_DECAY_PER_SECOND;
+assert.ok(
+  answerSeconds > 25 && answerSeconds < 50,
+  `a full charge should last 25-50s of answering, got ${answerSeconds.toFixed(1)}s`,
+);
 
 process.stdout.write('processing smoke passed\n');

@@ -50,6 +50,7 @@ import {
 } from '@/lib/conveyor-game';
 import {
   LEVEL_CONFIGS,
+  MACHINE_CYCLE_STAGES,
   PROCESSING_BONUS_DATA,
   PROCESSING_LEVELS,
   applyMachineEffect,
@@ -111,8 +112,6 @@ type MachineRuntime = {
   machineId: ProcessingMachineId;
   multiplier: number;
 };
-
-const PRESS_HIT_STAGES = [0.3, 0.74] as const;
 
 const clamp = (value: number, minimum: number, maximum: number) =>
   Math.max(minimum, Math.min(maximum, value));
@@ -480,7 +479,7 @@ export default function ConveyorGame() {
               dt / Math.max(1, zoneSeconds),
             );
           } else if (runtime.machineId === 'press') {
-            for (const [hitIndex, hitStage] of PRESS_HIT_STAGES.entries()) {
+            for (const [hitIndex, hitStage] of MACHINE_CYCLE_STAGES.entries()) {
               const key = `${runtime.sectionId}:press:${hitIndex}`;
               if (
                 run.stageProgress >= hitStage &&
@@ -493,8 +492,10 @@ export default function ConveyorGame() {
             }
           } else if (runtime.machineId === 'cutter') {
             const key = `${runtime.sectionId}:cut`;
+            // One cut, landing on the middle sweep of the three so the blade is
+            // over the part exactly when it bites.
             if (
-              run.stageProgress > 0.48 &&
+              run.stageProgress > MACHINE_CYCLE_STAGES[1] &&
               !processedCyclesRef.current.has(key)
             ) {
               processedCyclesRef.current.add(key);
@@ -742,7 +743,7 @@ export default function ConveyorGame() {
           for (const section of config.sections) {
             if (section.kind !== 'machine' || section.machineId !== 'press')
               continue;
-            for (const [hitIndex, hitStage] of PRESS_HIT_STAGES.entries()) {
+            for (const [hitIndex, hitStage] of MACHINE_CYCLE_STAGES.entries()) {
               const hitAt =
                 section.start + (section.end - section.start) * hitStage;
               if (

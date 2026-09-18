@@ -193,6 +193,45 @@ export const INITIAL_PROCESSING_STATE: Readonly<ProcessingState> = {
   machineHistory: [],
 };
 
+/**
+ * Every machine runs this many work cycles while a part passes through it,
+ * whatever the zone's length or the belt's speed. A fixed count is what makes a
+ * machine readable: the player counts the beats and times the one action they
+ * have against them, instead of guessing at a rhythm that free-runs on its own
+ * clock.
+ */
+export const MACHINE_CYCLES_PER_PASSAGE = 3;
+
+/**
+ * Where in the passage each cycle does its work: the middle of the cycle, so
+ * the beats are evenly spaced and neither the entry nor the exit of the zone
+ * lands on one.
+ */
+export const MACHINE_CYCLE_STAGES: readonly number[] = Array.from(
+  { length: MACHINE_CYCLES_PER_PASSAGE },
+  (_, index) => (index + 0.5) / MACHINE_CYCLES_PER_PASSAGE,
+);
+
+/** Position inside the current cycle, 0..1, for driving an animation. */
+export function machineCyclePhase(localProgress: number) {
+  const cycles = localProgress * MACHINE_CYCLES_PER_PASSAGE;
+  return cycles - Math.floor(cycles);
+}
+
+/**
+ * How hard the nearest cycle is striking at this point of the passage, 0..1.
+ * `width` is the half-length of a strike in passage units.
+ */
+export function machineCycleStrike(localProgress: number, width: number) {
+  let strongest = 0;
+  for (const stage of MACHINE_CYCLE_STAGES) {
+    const closeness =
+      1 - Math.abs(localProgress - stage) / Math.max(1e-6, width);
+    if (closeness > strongest) strongest = closeness;
+  }
+  return Math.max(0, Math.min(1, strongest));
+}
+
 export const MACHINE_EFFECTS: Record<ProcessingMachineId, MachineEffect> = {
   furnace: {
     id: 'furnace',
