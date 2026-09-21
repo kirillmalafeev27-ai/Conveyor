@@ -1,18 +1,41 @@
 export const PROCESSING_MACHINE_IDS = [
+  // The five the tutorial levels are built on.
   'furnace',
   'press',
   'rollers',
   'cooling',
   'cutter',
+  // Unlocked past the tutorial run: these reach the shape properties the first
+  // five machines cannot touch at all.
+  'hammer',
+  'upsetter',
+  'trimmer',
+  'bender',
+  'straightener',
+  'punch',
+  'polisher',
+  'quench',
 ] as const;
 
 export type ProcessingMachineId = (typeof PROCESSING_MACHINE_IDS)[number];
-export type ProcessingLevelId = 1 | 2 | 3 | 4 | 5;
+
+/**
+ * Levels run without an upper bound: the hand-authored ones are numbered first
+ * and everything past them is generated. See TUTORIAL_LEVEL_COUNT.
+ */
+export type ProcessingLevelId = number;
 export type ProcessingLane = 'upper' | 'lower';
 export type ProcessingAction =
   | 'toggle-lane'
   | 'shift-backward'
-  | 'shift-forward';
+  | 'shift-forward'
+  /**
+   * Sends the part round the return conveyor to the last fork. Without it a
+   * branch taken by mistake — or a decision the belt carried the player past —
+   * is unrecoverable, because a committed lane cannot be switched and the line
+   * only runs forwards.
+   */
+  | 'recirculate';
 
 export const PROCESSING_BONUS_ORDER = [
   'booster',
@@ -34,16 +57,30 @@ export type ProcessingState = {
   thickness: number;
   width: number;
   length: number;
+  /** Angle the part is bent to, in degrees. 0 is flat stock. */
+  bend: number;
+  /** Punched holes, counted. */
+  holes: number;
+  /** Surface finish, 0 is as-rolled scale and 100 is mirror. */
+  polish: number;
   crackRisk: number;
   cracked: boolean;
   machineHistory: ProcessingMachineId[];
 };
 
+/**
+ * The acceptance spec. Only the properties a level actually cares about are
+ * listed: an order for flat stock simply never mentions a bend, so neither the
+ * grader nor the panel invents a requirement for one.
+ */
 export type ProcessingTarget = {
   temperature: NumericRange;
   thickness: NumericRange;
   width: NumericRange;
   length: NumericRange;
+  bend?: NumericRange;
+  holes?: NumericRange;
+  polish?: NumericRange;
   maxCrackRisk: number;
   rejectCracked: boolean;
 };
@@ -63,6 +100,13 @@ export type MachineEffect = {
   coolingFraction?: number;
   coldCrackThreshold?: number;
   coldCrackRisk?: number;
+  bendDelta?: number;
+  /** Pulls the bend back towards flat by this fraction of what is there. */
+  bendRelief?: number;
+  holesDelta?: number;
+  polishDelta?: number;
+  /** Takes this much crack risk back out of the metal. */
+  crackRelief?: number;
 };
 
 export type MachineApplication = {
@@ -72,7 +116,14 @@ export type MachineApplication = {
   exposure: number;
   crackRiskAdded: number;
   visiblyChanged: ReadonlyArray<
-    'temperature' | 'thickness' | 'width' | 'length' | 'crackRisk'
+    | 'temperature'
+    | 'thickness'
+    | 'width'
+    | 'length'
+    | 'bend'
+    | 'holes'
+    | 'polish'
+    | 'crackRisk'
   >;
 };
 
@@ -81,6 +132,9 @@ export type ProcessingVisualState = {
   widthScale: number;
   thicknessScale: number;
   lengthScale: number;
+  bendDegrees: number;
+  holes: number;
+  polish01: number;
   metalColor: string;
   glow: number;
   crackOpacity: number;
@@ -90,10 +144,8 @@ export type ProcessingVisualState = {
 export type ProcessingQualityReport = {
   complete: boolean;
   score: number;
-  matched: Record<
-    'temperature' | 'thickness' | 'width' | 'length' | 'crackRisk',
-    boolean
-  >;
+  /** Only the properties the target actually asked for appear here. */
+  matched: Partial<Record<ProcessingRequirementKey, boolean>>;
   issues: string[];
 };
 
@@ -109,7 +161,7 @@ export type ProcessingLevel = {
   title: string;
   teaches: string;
   unlockedMachines: ReadonlyArray<ProcessingMachineId>;
-  forks: 0 | 1 | 2;
+  forks: number;
   bonusesEnabled: boolean;
   procedural: boolean;
   target: ProcessingTarget;
@@ -162,6 +214,16 @@ export type FactoryFork = {
   prepSeconds: number;
   upperLabel: string;
   lowerLabel: string;
+  /**
+   * Where the return conveyor picks the part up. Inside this stretch the player
+   * can spend their action to run the fork again, which is the way out of a
+   * branch that turned out to be the wrong one.
+   */
+  returnStart: number;
+  returnEnd: number;
+  /** Which lane carries the machine; the other one is a clean bypass. */
+  machineLane: ProcessingLane;
+  machineId: ProcessingMachineId;
 };
 
 export type ProcessingLevelConfig = {
@@ -188,6 +250,9 @@ export const INITIAL_PROCESSING_STATE: Readonly<ProcessingState> = {
   thickness: 28,
   width: 32,
   length: 46,
+  bend: 0,
+  holes: 0,
+  polish: 12,
   crackRisk: 0,
   cracked: false,
   machineHistory: [],
@@ -283,6 +348,95 @@ export const MACHINE_EFFECTS: Record<ProcessingMachineId, MachineEffect> = {
     temperatureDelta: -5,
     lengthDelta: -10,
   },
+  hammer: {
+    id: 'hammer',
+    label: 'Молот',
+    shortLabel: 'КОВКА',
+    description:
+      'Бьёт узко и глубоко: сильно уменьшает толщину и вытягивает в длину.',
+    telegraph: 'Впереди ковочный молот',
+    temperatureDelta: -45,
+    thicknessFactor: 0.58,
+    lengthFactor: 1.22,
+    widthFactor: 1.08,
+    coldCrackThreshold: 540,
+    coldCrackRisk: 86,
+  },
+  upsetter: {
+    id: 'upsetter',
+    label: 'Осадка',
+    shortLabel: 'ОСАДКА',
+    description: 'Сжимает вдоль: заготовка становится короче и толще.',
+    telegraph: 'Впереди осадочная машина',
+    temperatureDelta: -25,
+    thicknessFactor: 1.34,
+    lengthFactor: 0.78,
+    coldCrackThreshold: 500,
+    coldCrackRisk: 58,
+  },
+  trimmer: {
+    id: 'trimmer',
+    label: 'Обрезка кромки',
+    shortLabel: 'КРОМКА',
+    description: 'Срезает боковой облой — заготовка становится уже.',
+    telegraph: 'Впереди кромкообрезные ножи',
+    temperatureDelta: -10,
+    widthFactor: 0.79,
+  },
+  bender: {
+    id: 'bender',
+    label: 'Гибочный',
+    shortLabel: 'ГИБКА',
+    description: 'Загибает заготовку на угол. Холодная гибка даёт трещины.',
+    telegraph: 'Впереди гибочный пресс',
+    temperatureDelta: -15,
+    bendDelta: 32,
+    coldCrackThreshold: 460,
+    coldCrackRisk: 52,
+  },
+  straightener: {
+    id: 'straightener',
+    label: 'Правка',
+    shortLabel: 'ПРАВКА',
+    description: 'Выправляет изгиб и снимает часть напряжений.',
+    telegraph: 'Впереди правильная машина',
+    temperatureDelta: -12,
+    bendRelief: 0.72,
+    crackRelief: 18,
+  },
+  punch: {
+    id: 'punch',
+    label: 'Пробивной',
+    shortLabel: 'ПРОБИВКА',
+    description: 'Пробивает отверстия. По холодному металлу рискованно.',
+    telegraph: 'Впереди пробивной штамп',
+    temperatureDelta: -18,
+    holesDelta: 2,
+    coldCrackThreshold: 420,
+    coldCrackRisk: 40,
+  },
+  polisher: {
+    id: 'polisher',
+    label: 'Шлифовка',
+    shortLabel: 'ШЛИФ',
+    description: 'Снимает окалину: поверхность чище, толщина чуть меньше.',
+    telegraph: 'Впереди шлифовальная линия',
+    temperatureDelta: -30,
+    thicknessFactor: 0.97,
+    polishDelta: 38,
+  },
+  quench: {
+    id: 'quench',
+    label: 'Закалка',
+    shortLabel: 'ЗАКАЛКА',
+    description:
+      'Резко сбрасывает температуру. Быстрее охлаждения, но металл грубеет.',
+    telegraph: 'Впереди закалочный бак',
+    coolingTarget: 40,
+    coolingFraction: 0.93,
+    polishDelta: -14,
+    crackRelief: -12,
+  },
 };
 
 export const PROCESSING_BONUS_DATA: Record<
@@ -320,167 +474,6 @@ export const PROCESSING_BONUS_DATA: Record<
   },
 };
 
-const LEVEL_TARGETS: Record<ProcessingLevelId, ProcessingTarget> = {
-  1: {
-    temperature: { min: 520, max: 720 },
-    thickness: { min: 17.5, max: 21 },
-    width: { min: 39, max: 45 },
-    length: { min: 44, max: 48 },
-    maxCrackRisk: 25,
-    rejectCracked: true,
-  },
-  2: {
-    temperature: { min: 500, max: 700 },
-    thickness: { min: 16.5, max: 20 },
-    width: { min: 33, max: 39 },
-    length: { min: 55, max: 62 },
-    maxCrackRisk: 25,
-    rejectCracked: true,
-  },
-  3: {
-    temperature: { min: 150, max: 300 },
-    thickness: { min: 16.5, max: 20 },
-    width: { min: 33, max: 39 },
-    length: { min: 55, max: 62 },
-    maxCrackRisk: 25,
-    rejectCracked: true,
-  },
-  4: {
-    temperature: { min: 140, max: 300 },
-    thickness: { min: 16.5, max: 20 },
-    width: { min: 33, max: 39 },
-    length: { min: 44, max: 52 },
-    maxCrackRisk: 25,
-    rejectCracked: true,
-  },
-  5: {
-    temperature: { min: 140, max: 300 },
-    thickness: { min: 16.5, max: 20 },
-    width: { min: 33, max: 39 },
-    length: { min: 44, max: 52 },
-    maxCrackRisk: 25,
-    rejectCracked: true,
-  },
-};
-
-const plan = (
-  id: string,
-  label: string,
-  description: string,
-  machines: ReadonlyArray<ProcessingMachineId>,
-): ProcessingLevelPlan => ({ id, label, description, machines });
-
-export const PROCESSING_LEVELS: Record<ProcessingLevelId, ProcessingLevel> = {
-  1: {
-    id: 1,
-    title: 'Раскалить и сплющить',
-    teaches: 'Печь меняет цвет металла; холодный пресс создаёт трещины.',
-    unlockedMachines: ['furnace', 'press'],
-    forks: 0,
-    bonusesEnabled: false,
-    procedural: false,
-    target: LEVEL_TARGETS[1],
-    viablePlans: [
-      plan(
-        'heat-then-press',
-        'Горячая штамповка',
-        'Сначала нагреть, затем пройти пресс.',
-        ['furnace', 'press'],
-      ),
-    ],
-  },
-  2: {
-    id: 2,
-    title: 'Вытянуть лист',
-    teaches: 'Вальцы увеличивают длину, уменьшая ширину.',
-    unlockedMachines: ['furnace', 'press', 'rollers'],
-    forks: 0,
-    bonusesEnabled: false,
-    procedural: false,
-    target: LEVEL_TARGETS[2],
-    viablePlans: [
-      plan(
-        'press-then-roll',
-        'Широкий прокат',
-        'Нагреть, сплющить и вытянуть вальцами.',
-        ['furnace', 'press', 'rollers'],
-      ),
-    ],
-  },
-  3: {
-    id: 3,
-    title: 'Выбрать порядок',
-    teaches: 'Первая развилка и охлаждение закрепляют форму.',
-    unlockedMachines: ['furnace', 'press', 'rollers', 'cooling'],
-    forks: 1,
-    bonusesEnabled: false,
-    procedural: false,
-    target: LEVEL_TARGETS[3],
-    viablePlans: [
-      plan(
-        'wide-first',
-        'Сначала пресс',
-        'Печь → пресс → вальцы → охлаждение.',
-        ['furnace', 'press', 'rollers', 'cooling'],
-      ),
-      plan(
-        'long-first',
-        'Сначала вальцы',
-        'Печь → вальцы → пресс → охлаждение.',
-        ['furnace', 'rollers', 'press', 'cooling'],
-      ),
-    ],
-  },
-  4: {
-    id: 4,
-    title: 'Управлять линией',
-    teaches: 'Две развилки и редкие одноразовые бонусы.',
-    unlockedMachines: PROCESSING_MACHINE_IDS,
-    forks: 2,
-    bonusesEnabled: true,
-    procedural: false,
-    target: LEVEL_TARGETS[4],
-    viablePlans: [
-      plan(
-        'cut-last',
-        'Рез после проката',
-        'Печь → пресс → вальцы → охлаждение → резак.',
-        ['furnace', 'press', 'rollers', 'cooling', 'cutter'],
-      ),
-      plan(
-        'cut-before-roll',
-        'Рез перед прокатом',
-        'Печь → пресс → резак → вальцы → охлаждение.',
-        ['furnace', 'press', 'cutter', 'rollers', 'cooling'],
-      ),
-    ],
-  },
-  5: {
-    id: 5,
-    title: 'Смена мастера',
-    teaches: 'Полная процедурная линия: считывай металл, а не запоминай путь.',
-    unlockedMachines: PROCESSING_MACHINE_IDS,
-    forks: 2,
-    bonusesEnabled: true,
-    procedural: true,
-    target: LEVEL_TARGETS[5],
-    viablePlans: [
-      plan(
-        'level-five-a',
-        'План A',
-        'Печь → пресс → вальцы → охлаждение → резак.',
-        ['furnace', 'press', 'rollers', 'cooling', 'cutter'],
-      ),
-      plan(
-        'level-five-b',
-        'План B',
-        'Печь → пресс → резак → вальцы → охлаждение.',
-        ['furnace', 'press', 'cutter', 'rollers', 'cooling'],
-      ),
-    ],
-  },
-};
-
 const section = (
   id: string,
   kind: FactorySectionKind,
@@ -491,292 +484,6 @@ const section = (
     lane: 'both',
   },
 ): FactorySection => ({ id, kind, start, end, label, ...options });
-
-/**
- * Exact straight-line layouts used by the camera and renderer. Every fork is
- * announced for 8–12 seconds before commit; the lane at commit selects the
- * active branch automatically. Machine zones are deliberately long enough to
- * be experienced as sections, never as small collision dots.
- */
-export const LEVEL_CONFIGS: Record<ProcessingLevelId, ProcessingLevelConfig> = {
-  1: {
-    levelId: 1,
-    length: 64,
-    startAt: 0,
-    finishAt: 64,
-    inspectionStart: 56,
-    baseBeltSpeed: 1.55,
-    forks: [],
-    sections: [
-      section('L1-start', 'start', 0, 8, 'Подача'),
-      section('L1-furnace', 'machine', 14, 27, 'Печь', {
-        lane: 'both',
-        machineId: 'furnace',
-        telegraphStart: 0,
-      }),
-      section('L1-clean', 'clean', 27, 35, 'Чистый участок'),
-      section('L1-press', 'machine', 35, 49, 'Пресс', {
-        lane: 'both',
-        machineId: 'press',
-        telegraphStart: 19,
-      }),
-      section('L1-release', 'clean', 49, 56, 'Выход из пресса'),
-      section('L1-inspection', 'inspection', 56, 64, 'Контроль качества'),
-    ],
-  },
-  2: {
-    levelId: 2,
-    length: 86,
-    startAt: 0,
-    finishAt: 86,
-    inspectionStart: 78,
-    baseBeltSpeed: 1.6,
-    forks: [],
-    sections: [
-      section('L2-start', 'start', 0, 8, 'Подача'),
-      section('L2-furnace', 'machine', 14, 27, 'Печь', {
-        lane: 'both',
-        machineId: 'furnace',
-        telegraphStart: 0,
-      }),
-      section('L2-clean-a', 'clean', 27, 35, 'Перед прессом'),
-      section('L2-press', 'machine', 35, 49, 'Пресс', {
-        lane: 'both',
-        machineId: 'press',
-        telegraphStart: 19,
-      }),
-      section('L2-clean-b', 'clean', 49, 56, 'Перед вальцами'),
-      section('L2-rollers', 'machine', 56, 71, 'Вальцы', {
-        lane: 'both',
-        machineId: 'rollers',
-        telegraphStart: 40,
-      }),
-      section('L2-release', 'clean', 71, 78, 'Выход из вальцов'),
-      section('L2-inspection', 'inspection', 78, 86, 'Контроль качества'),
-    ],
-  },
-  3: {
-    levelId: 3,
-    length: 108,
-    startAt: 0,
-    finishAt: 108,
-    inspectionStart: 100,
-    baseBeltSpeed: 1.65,
-    forks: [
-      {
-        id: 'L3-order-fork',
-        decisionStart: 29,
-        commitAt: 43,
-        mergeAt: 75,
-        prepSeconds: 9,
-        upperLabel: 'ПРЕСС → ВАЛЬЦЫ',
-        lowerLabel: 'ВАЛЬЦЫ → ПРЕСС',
-      },
-    ],
-    sections: [
-      section('L3-start', 'start', 0, 7, 'Подача'),
-      section('L3-furnace', 'machine', 13, 27, 'Печь', {
-        lane: 'both',
-        machineId: 'furnace',
-        telegraphStart: 0,
-      }),
-      section('L3-fork', 'fork', 29, 43, 'Выбор порядка обработки'),
-      section('L3-upper-press', 'machine', 45, 56, 'Пресс', {
-        lane: 'upper',
-        machineId: 'press',
-        telegraphStart: 29,
-      }),
-      section('L3-upper-rollers', 'machine', 59, 72, 'Вальцы', {
-        lane: 'upper',
-        machineId: 'rollers',
-        telegraphStart: 48,
-      }),
-      section('L3-lower-rollers', 'machine', 45, 58, 'Вальцы', {
-        lane: 'lower',
-        machineId: 'rollers',
-        telegraphStart: 29,
-      }),
-      section('L3-lower-press', 'machine', 61, 72, 'Пресс', {
-        lane: 'lower',
-        machineId: 'press',
-        telegraphStart: 48,
-      }),
-      section('L3-merge', 'merge', 72, 77, 'Слияние линий'),
-      section('L3-clean', 'clean', 77, 82, 'Перед охлаждением'),
-      section('L3-cooling', 'machine', 82, 96, 'Охлаждение', {
-        lane: 'both',
-        machineId: 'cooling',
-        telegraphStart: 68,
-      }),
-      section('L3-release', 'clean', 96, 100, 'Выход'),
-      section('L3-inspection', 'inspection', 100, 108, 'Контроль качества'),
-    ],
-  },
-  4: {
-    levelId: 4,
-    length: 148,
-    startAt: 0,
-    finishAt: 148,
-    inspectionStart: 140,
-    baseBeltSpeed: 1.7,
-    forks: [
-      {
-        id: 'L4-order-fork',
-        decisionStart: 29,
-        commitAt: 43,
-        mergeAt: 75,
-        prepSeconds: 8,
-        upperLabel: 'ПРЕСС → ВАЛЬЦЫ',
-        lowerLabel: 'ВАЛЬЦЫ → ПРЕСС',
-      },
-      {
-        id: 'L4-finish-fork',
-        decisionStart: 82,
-        commitAt: 98,
-        mergeAt: 132,
-        prepSeconds: 10,
-        upperLabel: 'ОХЛАДИТЬ → РЕЗАТЬ',
-        lowerLabel: 'РЕЗАТЬ → ОХЛАДИТЬ',
-      },
-    ],
-    sections: [
-      section('L4-start', 'start', 0, 7, 'Подача'),
-      section('L4-furnace', 'machine', 13, 27, 'Печь', {
-        lane: 'both',
-        machineId: 'furnace',
-        telegraphStart: 0,
-      }),
-      section('L4-fork-a', 'fork', 29, 43, 'Первая развилка'),
-      section('L4-upper-press', 'machine', 45, 56, 'Пресс', {
-        lane: 'upper',
-        machineId: 'press',
-        telegraphStart: 29,
-      }),
-      section('L4-upper-rollers', 'machine', 59, 72, 'Вальцы', {
-        lane: 'upper',
-        machineId: 'rollers',
-        telegraphStart: 48,
-      }),
-      section('L4-lower-rollers', 'machine', 45, 58, 'Вальцы', {
-        lane: 'lower',
-        machineId: 'rollers',
-        telegraphStart: 29,
-      }),
-      section('L4-lower-press', 'machine', 61, 72, 'Пресс', {
-        lane: 'lower',
-        machineId: 'press',
-        telegraphStart: 48,
-      }),
-      section('L4-merge-a', 'merge', 72, 78, 'Слияние'),
-      section('L4-fork-b', 'fork', 82, 98, 'Вторая развилка'),
-      section('L4-upper-cooling', 'machine', 100, 112, 'Охлаждение', {
-        lane: 'upper',
-        machineId: 'cooling',
-        telegraphStart: 84,
-      }),
-      section('L4-upper-cutter', 'machine', 116, 128, 'Резак', {
-        lane: 'upper',
-        machineId: 'cutter',
-        telegraphStart: 102,
-      }),
-      section('L4-lower-cutter', 'machine', 100, 112, 'Резак', {
-        lane: 'lower',
-        machineId: 'cutter',
-        telegraphStart: 84,
-      }),
-      section('L4-lower-cooling', 'machine', 116, 128, 'Охлаждение', {
-        lane: 'lower',
-        machineId: 'cooling',
-        telegraphStart: 102,
-      }),
-      section('L4-merge-b', 'merge', 128, 134, 'Слияние'),
-      section('L4-release', 'clean', 134, 140, 'Выход'),
-      section('L4-inspection', 'inspection', 140, 148, 'Контроль качества'),
-    ],
-  },
-  5: {
-    levelId: 5,
-    length: 156,
-    startAt: 0,
-    finishAt: 156,
-    inspectionStart: 148,
-    baseBeltSpeed: 1.8,
-    forks: [
-      {
-        id: 'L5-order-fork',
-        decisionStart: 31,
-        commitAt: 47,
-        mergeAt: 81,
-        prepSeconds: 9,
-        upperLabel: 'ПРЕСС → ВАЛЬЦЫ',
-        lowerLabel: 'ВАЛЬЦЫ → ПРЕСС',
-      },
-      {
-        id: 'L5-finish-fork',
-        decisionStart: 88,
-        commitAt: 104,
-        mergeAt: 139,
-        prepSeconds: 9,
-        upperLabel: 'ОХЛАДИТЬ → РЕЗАТЬ',
-        lowerLabel: 'РЕЗАТЬ → ОХЛАДИТЬ',
-      },
-    ],
-    sections: [
-      section('L5-start', 'start', 0, 8, 'Подача'),
-      section('L5-furnace', 'machine', 14, 29, 'Печь', {
-        lane: 'both',
-        machineId: 'furnace',
-        telegraphStart: 0,
-      }),
-      section('L5-fork-a', 'fork', 31, 47, 'Первая развилка'),
-      section('L5-upper-press', 'machine', 49, 61, 'Пресс', {
-        lane: 'upper',
-        machineId: 'press',
-        telegraphStart: 33,
-      }),
-      section('L5-upper-rollers', 'machine', 65, 78, 'Вальцы', {
-        lane: 'upper',
-        machineId: 'rollers',
-        telegraphStart: 52,
-      }),
-      section('L5-lower-rollers', 'machine', 49, 62, 'Вальцы', {
-        lane: 'lower',
-        machineId: 'rollers',
-        telegraphStart: 33,
-      }),
-      section('L5-lower-press', 'machine', 66, 78, 'Пресс', {
-        lane: 'lower',
-        machineId: 'press',
-        telegraphStart: 52,
-      }),
-      section('L5-merge-a', 'merge', 78, 84, 'Слияние'),
-      section('L5-fork-b', 'fork', 88, 104, 'Вторая развилка'),
-      section('L5-upper-cooling', 'machine', 106, 119, 'Охлаждение', {
-        lane: 'upper',
-        machineId: 'cooling',
-        telegraphStart: 90,
-      }),
-      section('L5-upper-cutter', 'machine', 123, 135, 'Резак', {
-        lane: 'upper',
-        machineId: 'cutter',
-        telegraphStart: 109,
-      }),
-      section('L5-lower-cutter', 'machine', 106, 118, 'Резак', {
-        lane: 'lower',
-        machineId: 'cutter',
-        telegraphStart: 90,
-      }),
-      section('L5-lower-cooling', 'machine', 122, 135, 'Охлаждение', {
-        lane: 'lower',
-        machineId: 'cooling',
-        telegraphStart: 108,
-      }),
-      section('L5-merge-b', 'merge', 135, 141, 'Слияние'),
-      section('L5-release', 'clean', 141, 148, 'Выход'),
-      section('L5-inspection', 'inspection', 148, 156, 'Контроль качества'),
-    ],
-  },
-};
 
 const clamp = (value: number, minimum: number, maximum: number) =>
   Math.max(minimum, Math.min(maximum, value));
@@ -803,6 +510,9 @@ export function cloneProcessingTarget(
     thickness: { ...target.thickness },
     width: { ...target.width },
     length: { ...target.length },
+    ...(target.bend ? { bend: { ...target.bend } } : {}),
+    ...(target.holes ? { holes: { ...target.holes } } : {}),
+    ...(target.polish ? { polish: { ...target.polish } } : {}),
     maxCrackRisk: target.maxCrackRisk,
     rejectCracked: target.rejectCracked,
   };
@@ -865,7 +575,41 @@ export function applyMachineEffect(
     visiblyChanged.push('length');
   }
 
+  if (effect.bendDelta !== undefined) {
+    next.bend = clamp(next.bend + effect.bendDelta * strength, 0, 150);
+    visiblyChanged.push('bend');
+  }
+  if (effect.bendRelief !== undefined) {
+    next.bend = Math.max(
+      0,
+      next.bend * Math.pow(1 - clamp(effect.bendRelief, 0, 1), strength),
+    );
+    visiblyChanged.push('bend');
+  }
+  if (effect.holesDelta !== undefined) {
+    // Holes are countable, so a partial pass either punches one or does not.
+    next.holes = Math.max(
+      0,
+      next.holes + Math.round(effect.holesDelta * strength),
+    );
+    visiblyChanged.push('holes');
+  }
+  if (effect.polishDelta !== undefined) {
+    next.polish = clamp(next.polish + effect.polishDelta * strength, 0, 100);
+    visiblyChanged.push('polish');
+  }
+
   let crackRiskAdded = 0;
+  if (effect.crackRelief !== undefined) {
+    // A negative relief is a machine that roughs the metal up instead.
+    next.crackRisk = clamp(
+      next.crackRisk - effect.crackRelief * strength,
+      0,
+      100,
+    );
+    crackRiskAdded = -effect.crackRelief * strength;
+    visiblyChanged.push('crackRisk');
+  }
   if (
     effect.coldCrackThreshold !== undefined &&
     effect.coldCrackRisk !== undefined
@@ -876,8 +620,8 @@ export function applyMachineEffect(
       0,
       1,
     );
-    crackRiskAdded = effect.coldCrackRisk * coldness * strength;
-    if (crackRiskAdded > 0) {
+    crackRiskAdded += effect.coldCrackRisk * coldness * strength;
+    if (effect.coldCrackRisk * coldness * strength > 0) {
       next.crackRisk = clamp(next.crackRisk + crackRiskAdded, 0, 100);
       visiblyChanged.push('crackRisk');
     }
@@ -887,6 +631,8 @@ export function applyMachineEffect(
   next.thickness = round(next.thickness);
   next.width = round(next.width);
   next.length = round(next.length);
+  next.bend = round(next.bend);
+  next.polish = round(next.polish);
   next.crackRisk = round(next.crackRisk);
   next.cracked = next.cracked || next.crackRisk >= 70;
   next.machineHistory.push(machineId);
@@ -909,6 +655,9 @@ export type ProcessingRequirementKey =
   | 'thickness'
   | 'width'
   | 'length'
+  | 'bend'
+  | 'holes'
+  | 'polish'
   | 'crackRisk';
 
 /**
@@ -938,7 +687,9 @@ function formatMeasure(value: number) {
 }
 
 function formatRange(range: NumericRange, unit: string) {
-  return `${formatMeasure(range.min)}–${formatMeasure(range.max)} ${unit}`;
+  return range.min === range.max
+    ? `${formatMeasure(range.min)} ${unit}`
+    : `${formatMeasure(range.min)}–${formatMeasure(range.max)} ${unit}`;
 }
 
 export function describeProcessingRequirements(
@@ -952,8 +703,9 @@ export function describeProcessingRequirements(
     demandVerb: string,
     tooLow: string,
     tooHigh: string,
+    explicitRange?: NumericRange,
   ): ProcessingRequirement => {
-    const range = target[key];
+    const range = explicitRange ?? (target[key] as NumericRange);
     const value = state[key];
     return {
       key,
@@ -972,6 +724,47 @@ export function describeProcessingRequirements(
   const crackMet =
     state.crackRisk <= target.maxCrackRisk &&
     (!target.rejectCracked || !state.cracked);
+
+  const optional: ProcessingRequirement[] = [];
+  if (target.bend) {
+    optional.push(
+      dimension(
+        'bend',
+        'Изгиб',
+        '°',
+        'Загнуть на',
+        'недогнута — ещё раз в гибочный',
+        'перегнута — нужна правка',
+        target.bend,
+      ),
+    );
+  }
+  if (target.holes) {
+    optional.push(
+      dimension(
+        'holes',
+        'Отверстия',
+        'шт',
+        'Пробить',
+        'отверстий не хватает',
+        'отверстий больше нормы',
+        target.holes,
+      ),
+    );
+  }
+  if (target.polish) {
+    optional.push(
+      dimension(
+        'polish',
+        'Поверхность',
+        '%',
+        'Довести чистоту до',
+        'окалина — нужна шлифовка',
+        'перешлифована',
+        target.polish,
+      ),
+    );
+  }
 
   return [
     dimension(
@@ -1006,6 +799,7 @@ export function describeProcessingRequirements(
       'короткая — нужны вальцы',
       'длинная — под резак',
     ),
+    ...optional,
     {
       key: 'crackRisk',
       label: 'Трещины',
@@ -1028,25 +822,25 @@ export function evaluateProcessingState(
   state: ProcessingState,
   target: ProcessingTarget,
 ): ProcessingQualityReport {
-  const matched = {
-    temperature: inRange(state.temperature, target.temperature),
-    thickness: inRange(state.thickness, target.thickness),
-    width: inRange(state.width, target.width),
-    length: inRange(state.length, target.length),
-    crackRisk:
-      state.crackRisk <= target.maxCrackRisk &&
-      (!target.rejectCracked || !state.cracked),
-  };
+  // The spec drives both the grade and the panel, so a property the level never
+  // asked for is simply absent from both.
+  const requirements = describeProcessingRequirements(state, target);
+  const matched = {} as ProcessingQualityReport['matched'];
   const issues: string[] = [];
-  if (!matched.temperature) issues.push('температура вне допуска');
-  if (!matched.thickness) issues.push('толщина вне допуска');
-  if (!matched.width) issues.push('ширина вне допуска');
-  if (!matched.length) issues.push('длина вне допуска');
-  if (!matched.crackRisk) issues.push('риск трещин слишком высок');
-  const matchedCount = Object.values(matched).filter(Boolean).length;
+  for (const requirement of requirements) {
+    matched[requirement.key] = requirement.met;
+    if (!requirement.met) {
+      issues.push(
+        `${requirement.label.toLocaleLowerCase('ru-RU')}: ${requirement.correction}`,
+      );
+    }
+  }
+  const matchedCount = requirements.filter(
+    (requirement) => requirement.met,
+  ).length;
   return {
-    complete: matchedCount === Object.keys(matched).length,
-    score: Math.round((matchedCount / Object.keys(matched).length) * 100),
+    complete: matchedCount === requirements.length,
+    score: Math.round((matchedCount / Math.max(1, requirements.length)) * 100),
     matched,
     issues,
   };
@@ -1073,6 +867,9 @@ export function getProcessingVisualState(
     widthScale: state.width / INITIAL_PROCESSING_STATE.width,
     thicknessScale: state.thickness / INITIAL_PROCESSING_STATE.thickness,
     lengthScale: state.length / INITIAL_PROCESSING_STATE.length,
+    bendDegrees: state.bend,
+    holes: state.holes,
+    polish01: clamp(state.polish / 100, 0, 1),
     metalColor: colorForHeat(heat01),
     glow: clamp((state.temperature - 420) / 380, 0, 1),
     crackOpacity: clamp(state.crackRisk / 70, 0, 1),
@@ -1086,31 +883,422 @@ export function getProcessingVisualState(
   };
 }
 
-/** Small deterministic generator; every L5 layout keeps both certified plans. */
-export function generateProcessingLevel(
-  levelId: ProcessingLevelId,
-  seed = 1,
-): GeneratedProcessingLevel {
-  const level = PROCESSING_LEVELS[levelId];
-  const plans = level.viablePlans;
-  const selectedPlan = plans[Math.abs(Math.trunc(seed)) % plans.length];
-  const sections: GeneratedProcessingSection[] = selectedPlan.machines.map(
-    (machineId, index) => ({
-      id: `L${levelId}-${index + 1}-${machineId}`,
-      machineId,
-      lane:
-        level.forks === 0 ||
-        index === 0 ||
-        index === selectedPlan.machines.length - 1
-          ? 'both'
-          : (index + Math.abs(Math.trunc(seed))) % 2 === 0
-            ? 'upper'
-            : 'lower',
-      order: index,
-      telegraphDistance: machineId === 'press' ? 16 : 11,
-    }),
+/* ------------------------------------------------------------------ *
+ * Procedural shifts
+ *
+ * Past the tutorial run the factory is built rather than authored. A shift is
+ * generated from a recipe: pick a plan the roster can actually execute, lay the
+ * line out around it, and derive the acceptance spec by simulating that plan —
+ * so a generated order is solvable by construction, never by luck.
+ *
+ * Every fork offers one machine against one bypass. That keeps the choice
+ * readable (enter the machine, or run past it) and it is what makes the return
+ * loop a complete repair: a bypass leaves the metal untouched, so coming back
+ * round and entering the machine costs time and nothing else.
+ * ------------------------------------------------------------------ */
+
+/** Levels up to this number are hand-tuned lessons; past it, everything is generated. */
+export const TUTORIAL_LEVEL_COUNT = 9;
+
+/** Deterministic PRNG, so a level id always rebuilds the exact same shift. */
+function makeRandom(seed: number) {
+  let state = (Math.trunc(seed) || 1) >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let value = Math.imul(state ^ (state >>> 15), 1 | state);
+    value = (value + Math.imul(value ^ (value >>> 7), 61 | value)) ^ value;
+    return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+type LevelRecipe = {
+  title: string;
+  teaches: string;
+  /** Machines that run on the main line, before any choice is offered. */
+  opening: ReadonlyArray<ProcessingMachineId>;
+  /** Machines offered at a fork, each against a bypass. */
+  choices: ReadonlyArray<ProcessingMachineId>;
+  /** Which of those choices the order actually needs; the rest are bypassed. */
+  needed: ReadonlyArray<ProcessingMachineId>;
+  bonusesEnabled: boolean;
+  procedural: boolean;
+};
+
+const TUTORIAL_RECIPES: Record<number, LevelRecipe> = {
+  1: {
+    title: 'Раскалить и сплющить',
+    teaches: 'Печь меняет цвет металла; холодный пресс создаёт трещины.',
+    opening: ['furnace', 'press'],
+    choices: [],
+    needed: [],
+    bonusesEnabled: false,
+    procedural: false,
+  },
+  2: {
+    title: 'Вытянуть лист',
+    teaches: 'Вальцы увеличивают длину, уменьшая ширину.',
+    opening: ['furnace', 'press', 'rollers'],
+    choices: [],
+    needed: [],
+    bonusesEnabled: false,
+    procedural: false,
+  },
+  3: {
+    title: 'Войти или пройти мимо',
+    teaches:
+      'На развилке один станок против обвода: входи, только если он нужен.',
+    opening: ['furnace', 'press'],
+    choices: ['rollers', 'cooling'],
+    needed: ['cooling'],
+    bonusesEnabled: false,
+    procedural: false,
+  },
+  4: {
+    title: 'Две развилки подряд',
+    teaches: 'Спецификация слева говорит, в какую ветку заходить.',
+    opening: ['furnace', 'press'],
+    choices: ['rollers', 'cutter'],
+    needed: ['rollers', 'cutter'],
+    bonusesEnabled: true,
+    procedural: false,
+  },
+  5: {
+    title: 'Смена мастера',
+    teaches:
+      'Полная линия из пяти станков: считывай металл, а не запоминай путь.',
+    opening: ['furnace', 'press'],
+    choices: ['rollers', 'cooling', 'cutter'],
+    needed: ['rollers', 'cooling'],
+    bonusesEnabled: true,
+    procedural: false,
+  },
+  6: {
+    title: 'Ковка и осадка',
+    teaches: 'Молот тянет и утончает, осадка делает короче и толще.',
+    opening: ['furnace'],
+    choices: ['hammer', 'upsetter', 'cooling'],
+    needed: ['hammer', 'cooling'],
+    bonusesEnabled: true,
+    procedural: false,
+  },
+  7: {
+    title: 'Гибка и правка',
+    teaches: 'Появился угол изгиба. Гибочный задаёт его, правка убирает.',
+    opening: ['furnace', 'press'],
+    choices: ['bender', 'straightener', 'cooling'],
+    needed: ['bender', 'cooling'],
+    bonusesEnabled: true,
+    procedural: false,
+  },
+  8: {
+    title: 'Отверстия и кромка',
+    teaches:
+      'Пробивной штамп считает отверстия, обрезка снимает лишнюю ширину.',
+    opening: ['furnace', 'press'],
+    choices: ['punch', 'trimmer', 'cooling'],
+    needed: ['punch', 'trimmer'],
+    bonusesEnabled: true,
+    procedural: false,
+  },
+  9: {
+    title: 'Чистота и закалка',
+    teaches:
+      'Шлифовка поднимает чистоту, закалка сбрасывает тепло и грубит металл.',
+    opening: ['furnace', 'press'],
+    choices: ['polisher', 'quench', 'trimmer'],
+    needed: ['polisher', 'quench'],
+    bonusesEnabled: true,
+    procedural: false,
+  },
+};
+
+/** Machines a generated shift may hand out, with the opening heat kept separate. */
+const GENERATED_CHOICE_MACHINES: ReadonlyArray<ProcessingMachineId> = [
+  'press',
+  'rollers',
+  'cutter',
+  'cooling',
+  'hammer',
+  'upsetter',
+  'trimmer',
+  'bender',
+  'straightener',
+  'punch',
+  'polisher',
+  'quench',
+];
+
+function pickDistinct<T>(
+  pool: ReadonlyArray<T>,
+  count: number,
+  random: () => number,
+): T[] {
+  const remaining = [...pool];
+  const picked: T[] = [];
+  while (picked.length < count && remaining.length) {
+    picked.push(
+      remaining.splice(Math.floor(random() * remaining.length), 1)[0],
+    );
+  }
+  return picked;
+}
+
+function proceduralRecipe(levelId: number, random: () => number): LevelRecipe {
+  const beyond = levelId - TUTORIAL_LEVEL_COUNT;
+  const choiceCount = clamp(2 + Math.floor(beyond / 3), 2, 4);
+  const choices = pickDistinct(GENERATED_CHOICE_MACHINES, choiceCount, random);
+  // At least one branch is entered and at least one is bypassed, or the fork
+  // would not be a decision at all.
+  const neededCount = clamp(
+    1 + Math.floor(random() * (choices.length - 1)),
+    1,
+    choices.length - 1,
   );
-  return { level, sections, viablePlans: plans };
+  return {
+    title: `Смена ${levelId}`,
+    teaches: 'Линия собрана заново: читай спецификацию слева.',
+    opening: ['furnace'],
+    choices,
+    needed: choices.slice(0, neededCount),
+    bonusesEnabled: true,
+    procedural: true,
+  };
+}
+
+function recipeFor(levelId: number, random: () => number): LevelRecipe {
+  return TUTORIAL_RECIPES[levelId] ?? proceduralRecipe(levelId, random);
+}
+
+/**
+ * Widen a measured value into an acceptance window. The tolerance is relative
+ * so a 600 °C reading and a 2 mm one both get a window a player can hit.
+ */
+function windowAround(value: number, fraction: number, floor: number) {
+  const half = Math.max(Math.abs(value) * fraction, floor);
+  return { min: round(value - half), max: round(value + half) };
+}
+
+/** The spec of a finished part, derived from the plan that produced it. */
+export function targetFromPlan(
+  machines: ReadonlyArray<ProcessingMachineId>,
+  options: {
+    requireBend?: boolean;
+    requireHoles?: boolean;
+    requirePolish?: boolean;
+  } = {},
+): ProcessingTarget {
+  const finished = simulateProcessingPlan(machines);
+  const touched = new Set(machines);
+  const shapesBend =
+    options.requireBend ??
+    (touched.has('bender') || touched.has('straightener'));
+  const punches = options.requireHoles ?? touched.has('punch');
+  const finishes =
+    options.requirePolish ?? (touched.has('polisher') || touched.has('quench'));
+  return {
+    temperature: windowAround(finished.temperature, 0.16, 45),
+    thickness: windowAround(finished.thickness, 0.1, 1.2),
+    width: windowAround(finished.width, 0.09, 1.5),
+    length: windowAround(finished.length, 0.07, 1.5),
+    ...(shapesBend
+      ? { bend: windowAround(Math.max(finished.bend, 0), 0.2, 6) }
+      : {}),
+    ...(punches ? { holes: { min: finished.holes, max: finished.holes } } : {}),
+    ...(finishes ? { polish: windowAround(finished.polish, 0.22, 8) } : {}),
+    maxCrackRisk: Math.max(25, Math.ceil(finished.crackRisk + 12)),
+    rejectCracked: true,
+  };
+}
+
+const BYPASS_LABEL = 'ОБВОД';
+
+/** Zone lengths, tuned so one forward shift always clears a machine's beats. */
+const MACHINE_ZONE = 12;
+const OPENING_GAP = 6;
+const FORK_DECISION = 16;
+const BRANCH_GAP = 3;
+const RETURN_RUN = 10;
+
+export type BuiltProcessingLevel = {
+  level: ProcessingLevel;
+  config: ProcessingLevelConfig;
+};
+
+function buildLevel(levelId: number): BuiltProcessingLevel {
+  const random = makeRandom(levelId * 2654435761);
+  const recipe = recipeFor(levelId, random);
+  const sections: FactorySection[] = [];
+  const forks: FactoryFork[] = [];
+  const plan: ProcessingMachineId[] = [];
+
+  let cursor = 0;
+  sections.push(section(`L${levelId}-start`, 'start', 0, 8, 'Подача'));
+  cursor = 8;
+
+  for (const [index, machineId] of recipe.opening.entries()) {
+    const start = cursor + OPENING_GAP;
+    const end = start + MACHINE_ZONE + 2;
+    sections.push(
+      section(
+        `L${levelId}-open-${index}-${machineId}`,
+        'machine',
+        start,
+        end,
+        MACHINE_EFFECTS[machineId].label,
+        {
+          lane: 'both',
+          machineId,
+          telegraphStart: Math.max(0, start - 14),
+        },
+      ),
+    );
+    plan.push(machineId);
+    cursor = end;
+  }
+
+  const needed = new Set(recipe.needed);
+  for (const [index, machineId] of recipe.choices.entries()) {
+    const decisionStart = cursor + OPENING_GAP;
+    const commitAt = decisionStart + FORK_DECISION;
+    const branchStart = commitAt + BRANCH_GAP;
+    const branchEnd = branchStart + MACHINE_ZONE;
+    const mergeAt = branchEnd + BRANCH_GAP;
+    const machineLane: ProcessingLane = random() < 0.5 ? 'upper' : 'lower';
+    const bypassLane: ProcessingLane =
+      machineLane === 'upper' ? 'lower' : 'upper';
+    const forkId = `L${levelId}-fork-${index}`;
+
+    sections.push(
+      section(forkId, 'fork', decisionStart, commitAt, 'Развилка'),
+      // Exactly one machine on the branch, and nothing at all on the other.
+      section(
+        `${forkId}-machine`,
+        'machine',
+        branchStart,
+        branchEnd,
+        MACHINE_EFFECTS[machineId].label,
+        {
+          lane: machineLane,
+          machineId,
+          telegraphStart: decisionStart,
+        },
+      ),
+      section(
+        `${forkId}-bypass`,
+        'clean',
+        branchStart,
+        branchEnd,
+        BYPASS_LABEL,
+        {
+          lane: bypassLane,
+        },
+      ),
+      section(`${forkId}-merge`, 'merge', branchEnd, mergeAt, 'Слияние'),
+    );
+
+    forks.push({
+      id: forkId,
+      decisionStart,
+      commitAt,
+      mergeAt,
+      prepSeconds: 9,
+      upperLabel:
+        machineLane === 'upper'
+          ? MACHINE_EFFECTS[machineId].shortLabel
+          : BYPASS_LABEL,
+      lowerLabel:
+        machineLane === 'lower'
+          ? MACHINE_EFFECTS[machineId].shortLabel
+          : BYPASS_LABEL,
+      returnStart: mergeAt,
+      returnEnd: mergeAt + RETURN_RUN,
+      machineLane,
+      machineId,
+    });
+
+    if (needed.has(machineId)) plan.push(machineId);
+    cursor = mergeAt + RETURN_RUN;
+  }
+
+  const releaseEnd = cursor + 7;
+  const inspectionEnd = releaseEnd + 8;
+  sections.push(
+    section(`L${levelId}-release`, 'clean', cursor, releaseEnd, 'Выход'),
+    section(
+      `L${levelId}-inspection`,
+      'inspection',
+      releaseEnd,
+      inspectionEnd,
+      'Контроль качества',
+    ),
+  );
+
+  const level: ProcessingLevel = {
+    id: levelId,
+    title: recipe.title,
+    teaches: recipe.teaches,
+    unlockedMachines: [...new Set([...recipe.opening, ...recipe.choices])],
+    forks: recipe.choices.length,
+    bonusesEnabled: recipe.bonusesEnabled,
+    procedural: recipe.procedural,
+    target: targetFromPlan(plan),
+    viablePlans: [
+      {
+        id: `L${levelId}-plan`,
+        label: 'Маршрут смены',
+        description: plan
+          .map((machineId) => MACHINE_EFFECTS[machineId].label)
+          .join(' → '),
+        machines: plan,
+      },
+    ],
+  };
+
+  return {
+    level,
+    config: {
+      levelId,
+      length: inspectionEnd,
+      startAt: 0,
+      finishAt: inspectionEnd,
+      inspectionStart: releaseEnd,
+      baseBeltSpeed: 1.5 + Math.min(0.5, levelId * 0.05),
+      sections,
+      forks,
+    },
+  };
+}
+
+const builtLevels = new Map<number, BuiltProcessingLevel>();
+
+function builtLevel(levelId: ProcessingLevelId): BuiltProcessingLevel {
+  const id = Math.max(1, Math.trunc(levelId) || 1);
+  let built = builtLevels.get(id);
+  if (!built) {
+    built = buildLevel(id);
+    builtLevels.set(id, built);
+  }
+  return built;
+}
+
+export function processingLevel(levelId: ProcessingLevelId): ProcessingLevel {
+  return builtLevel(levelId).level;
+}
+
+export function levelConfig(levelId: ProcessingLevelId): ProcessingLevelConfig {
+  return builtLevel(levelId).config;
+}
+
+/** The fork whose return conveyor currently has the part, if any. */
+export function returnableFork(
+  levelId: ProcessingLevelId,
+  progress: number,
+): FactoryFork | null {
+  return (
+    levelConfig(levelId).forks.find(
+      (fork) => progress >= fork.returnStart && progress <= fork.returnEnd,
+    ) ?? null
+  );
 }
 
 export function simulateProcessingPlan(

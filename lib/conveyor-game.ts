@@ -1,11 +1,12 @@
 import {
-  LEVEL_CONFIGS,
   PROCESSING_BONUS_DATA,
-  PROCESSING_LEVELS,
   applyMachineEffect,
   cloneProcessingTarget,
   createProcessingState,
   getProcessingVisualState,
+  levelConfig,
+  processingLevel,
+  returnableFork,
   type ProcessingAction,
   type ProcessingBonusId,
   type ProcessingLane,
@@ -553,13 +554,13 @@ export function createRun(): ConveyorRun {
     objective: 'Активируй A, B и C в любом порядке',
     lossReason: '',
     level: 1,
-    factoryProgress: LEVEL_CONFIGS[1].startAt,
+    factoryProgress: levelConfig(1).startAt,
     stageIndex: 0,
     stageProgress: 0,
     processingLane: 'upper',
     processingVariant: 0,
     workpiece: createProcessingState(),
-    target: cloneProcessingTarget(PROCESSING_LEVELS[1].target),
+    target: cloneProcessingTarget(processingLevel(1).target),
     correctAnswers: 0,
     wrongAnswers: 0,
     bonusProgress: 0,
@@ -600,6 +601,12 @@ export type ProcessingActionResolution = {
   consumed: boolean;
   action: ProcessingAction;
   longitudinalDelta: number;
+  /**
+   * Set when the part was sent back up the line. Everything already applied
+   * past this point has to be forgotten, or the re-entered machines would not
+   * work the metal a second time.
+   */
+  rewoundTo?: number;
   reason: string;
 };
 
@@ -643,7 +650,7 @@ const BONUS_OFFER_ROTATION: ReadonlyArray<
 
 function releaseEarnedBonusOffer(run: ConveyorRun) {
   if (
-    !PROCESSING_LEVELS[run.level].bonusesEnabled ||
+    !processingLevel(run.level).bonusesEnabled ||
     run.bonusProgress < PROCESSING_BONUS_CORRECT_ANSWERS ||
     run.bonusOffer
   ) {
@@ -694,7 +701,7 @@ export function resolveProcessingQuiz(
   run.actionReady = true;
   run.streak += 1;
   run.correctAnswers += 1;
-  if (PROCESSING_LEVELS[run.level].bonusesEnabled) {
+  if (processingLevel(run.level).bonusesEnabled) {
     run.bonusProgress = Math.min(
       PROCESSING_BONUS_CORRECT_ANSWERS,
       run.bonusProgress + 1,
@@ -749,7 +756,38 @@ export function consumeProcessingAction(
     };
   }
 
-  const committedFork = LEVEL_CONFIGS[run.level].forks.find(
+  if (action === 'recirculate') {
+    const fork = returnableFork(run.level, run.factoryProgress);
+    if (!fork) {
+      run.message = 'Возврат доступен только на петле сразу после развилки.';
+      return {
+        run,
+        consumed: false,
+        action,
+        longitudinalDelta: 0,
+        reason: run.message,
+      };
+    }
+    // The part rides the loop back to the decision zone with its lane cleared,
+    // so the fork is a free choice again. Nothing about the metal changes: the
+    // cost is the run clock, which is the only currency that matters here.
+    const rewoundTo = fork.decisionStart;
+    run.factoryProgress = rewoundTo;
+    run.playerX = rewoundTo;
+    run.processingLane = 'upper';
+    run.actionReady = false;
+    run.message = 'Заготовка ушла на петлю возврата — развилка снова открыта.';
+    return {
+      run,
+      consumed: true,
+      action,
+      longitudinalDelta: 0,
+      rewoundTo,
+      reason: run.message,
+    };
+  }
+
+  const committedFork = levelConfig(run.level).forks.find(
     (fork) =>
       run.factoryProgress >= fork.commitAt &&
       run.factoryProgress < fork.mergeAt,
@@ -900,7 +938,7 @@ export function setProcessingLevel(
   level: ProcessingLevelId,
 ): ConveyorRun {
   const run = cloneConveyorRun(source);
-  const config = LEVEL_CONFIGS[level];
+  const config = levelConfig(level);
   run.level = level;
   run.factoryProgress = config.startAt;
   run.stageIndex = 0;
@@ -908,7 +946,7 @@ export function setProcessingLevel(
   run.processingLane = 'upper';
   run.processingVariant = 0;
   run.workpiece = createProcessingState();
-  run.target = cloneProcessingTarget(PROCESSING_LEVELS[level].target);
+  run.target = cloneProcessingTarget(processingLevel(level).target);
   run.actionReady = false;
   run.charge = 100;
   run.correctAnswers = 0;
@@ -920,7 +958,7 @@ export function setProcessingLevel(
   run.lastMachineId = null;
   run.slowUntil = 0;
   run.overdriveUntil = 0;
-  run.message = `${PROCESSING_LEVELS[level].title}: обработай заготовку по допускам.`;
+  run.message = `${processingLevel(level).title}: обработай заготовку по допускам.`;
   run.objective = 'Доставь металл в контроль качества';
   return run;
 }

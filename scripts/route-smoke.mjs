@@ -12,18 +12,31 @@ import {
   setProcessingLevel,
 } from '../lib/conveyor-game.ts';
 import {
-  LEVEL_CONFIGS,
   MACHINE_CYCLES_PER_PASSAGE,
   MACHINE_CYCLE_STAGES,
-  PROCESSING_LEVELS,
+  PROCESSING_MACHINE_IDS,
+  TUTORIAL_LEVEL_COUNT,
   applyMachineEffect,
   createProcessingState,
   describeProcessingRequirements,
   evaluateProcessingState,
+  levelConfig,
   machineCyclePhase,
   machineCycleStrike,
+  processingLevel,
+  returnableFork,
   simulateProcessingPlan,
 } from '../lib/processing-game.ts';
+
+// Every lesson, plus a stretch of generated shifts far enough out that the
+// recipe has grown extra forks.
+const SAMPLE_LEVELS = [
+  ...Array.from({ length: TUTORIAL_LEVEL_COUNT }, (_, index) => index + 1),
+  TUTORIAL_LEVEL_COUNT + 1,
+  TUTORIAL_LEVEL_COUNT + 4,
+  TUTORIAL_LEVEL_COUNT + 9,
+  TUTORIAL_LEVEL_COUNT + 17,
+];
 
 const initial = setProcessingLevel(createRun(), 4);
 const beforeWrong = structuredClone(initial.workpiece);
@@ -47,7 +60,10 @@ assert.equal(
 );
 
 const committed = resolveProcessingQuiz(initial, true).run;
-committed.factoryProgress = 52;
+// Park the part inside a committed branch rather than at a hand-picked number,
+// so the layout can move without the test going quietly meaningless.
+const branchFork = levelConfig(4).forks[0];
+committed.factoryProgress = (branchFork.commitAt + branchFork.mergeAt) / 2;
 const blockedLaneChange = consumeProcessingAction(committed, 'toggle-lane');
 assert.equal(blockedLaneChange.consumed, false);
 assert.equal(blockedLaneChange.run.processingLane, 'upper');
@@ -102,13 +118,13 @@ assert.ok(pressed.thickness < hot.thickness);
 assert.ok(pressed.width > hot.width);
 assert.equal(pressed.cracked, false);
 assert.equal(
-  evaluateProcessingState(pressed, PROCESSING_LEVELS[1].target).complete,
+  evaluateProcessingState(pressed, processingLevel(1).target).complete,
   true,
   'one hot press strike must produce an acceptable level-one part',
 );
 const overPressed = applyMachineEffect(pressed, 'press').state;
 assert.equal(
-  evaluateProcessingState(overPressed, PROCESSING_LEVELS[1].target).complete,
+  evaluateProcessingState(overPressed, processingLevel(1).target).complete,
   false,
   'lingering for a second press strike must reject the level-one part',
 );
@@ -122,9 +138,9 @@ assert.ok(cooled.temperature < rolled.temperature);
 const cut = applyMachineEffect(cooled, 'cutter').state;
 assert.ok(cut.length < cooled.length);
 
-for (const levelId of [1, 2, 3, 4, 5]) {
-  const level = PROCESSING_LEVELS[levelId];
-  const config = LEVEL_CONFIGS[levelId];
+for (const levelId of SAMPLE_LEVELS) {
+  const level = processingLevel(levelId);
+  const config = levelConfig(levelId);
   assert.ok(config.finishAt > config.startAt);
   assert.ok(config.sections.some((section) => section.kind === 'inspection'));
   assert.equal(config.forks.length, level.forks);
@@ -189,12 +205,12 @@ const afterEveryBeat = MACHINE_CYCLE_STAGES.reduce(
   hotBlank,
 );
 assert.equal(
-  evaluateProcessingState(afterFirstBeat, PROCESSING_LEVELS[1].target).complete,
+  evaluateProcessingState(afterFirstBeat, processingLevel(1).target).complete,
   true,
   'leaving after the first beat must still produce an acceptable part',
 );
 assert.equal(
-  evaluateProcessingState(afterEveryBeat, PROCESSING_LEVELS[1].target).complete,
+  evaluateProcessingState(afterEveryBeat, processingLevel(1).target).complete,
   false,
   'taking all three beats must reject the part',
 );
@@ -205,16 +221,26 @@ assert.ok(
 
 // The spec the player reads on the left has to say the same thing the grader
 // decides, or the panel teaches the wrong lesson.
-for (const levelId of [1, 2, 3, 4, 5]) {
-  const target = PROCESSING_LEVELS[levelId].target;
+for (const levelId of SAMPLE_LEVELS) {
+  const target = processingLevel(levelId).target;
   for (const state of [
     createProcessingState(),
     applyMachineEffect(createProcessingState(), 'furnace').state,
-    simulateProcessingPlan(PROCESSING_LEVELS[levelId].viablePlans[0].machines),
+    simulateProcessingPlan(processingLevel(levelId).viablePlans[0].machines),
   ]) {
     const report = evaluateProcessingState(state, target);
     const requirements = describeProcessingRequirements(state, target);
-    assert.equal(requirements.length, 5, 'every measurement needs a line');
+    // Four dimensions and the crack limit are always graded; bend, holes and
+    // finish only appear when the order actually asks for them.
+    assert.ok(
+      requirements.length >= 5 && requirements.length <= 8,
+      `L${levelId}: ${requirements.length} requirement lines`,
+    );
+    assert.equal(
+      requirements.length,
+      new Set(requirements.map((requirement) => requirement.key)).size,
+      'a measurement may not be graded twice',
+    );
     for (const requirement of requirements) {
       assert.ok(
         requirement.label,
@@ -250,15 +276,16 @@ for (const levelId of [1, 2, 3, 4, 5]) {
 // level's own plan has to clear every one of them.
 const coldSpec = describeProcessingRequirements(
   createProcessingState(),
-  PROCESSING_LEVELS[1].target,
+  processingLevel(1).target,
 );
 assert.deepEqual(
   coldSpec.filter((requirement) => !requirement.met).map((r) => r.key),
   ['temperature', 'thickness', 'width'],
+  'a cold blank on the first lesson has to read as three separate problems',
 );
 const finishedSpec = describeProcessingRequirements(
-  simulateProcessingPlan(PROCESSING_LEVELS[1].viablePlans[0].machines),
-  PROCESSING_LEVELS[1].target,
+  simulateProcessingPlan(processingLevel(1).viablePlans[0].machines),
+  processingLevel(1).target,
 );
 assert.ok(
   finishedSpec.every((requirement) => requirement.met),
@@ -267,7 +294,8 @@ assert.ok(
 
 // The press is survivable only because one shift forward clears the beats that
 // are left; a longer press zone than the shift would trap the part.
-for (const [levelId, config] of Object.entries(LEVEL_CONFIGS)) {
+for (const levelId of SAMPLE_LEVELS) {
+  const config = levelConfig(levelId);
   for (const section of config.sections) {
     if (section.kind !== 'machine' || section.machineId !== 'press') continue;
     const length = section.end - section.start;
@@ -290,5 +318,186 @@ assert.ok(
   answerSeconds > 25 && answerSeconds < 50,
   `a full charge should last 25-50s of answering, got ${answerSeconds.toFixed(1)}s`,
 );
+
+/* --- generated shifts ------------------------------------------------ */
+
+for (const levelId of SAMPLE_LEVELS) {
+  const level = processingLevel(levelId);
+  const config = levelConfig(levelId);
+  const label = `L${levelId}`;
+
+  // A generated order is only fair if the line it was generated with can fill
+  // it. The plan is simulated straight through, with no player skill involved.
+  const finished = simulateProcessingPlan(level.viablePlans[0].machines);
+  const report = evaluateProcessingState(finished, level.target);
+  assert.ok(
+    report.complete,
+    `${label}: its own plan leaves the order unfilled (${report.issues.join('; ')})`,
+  );
+
+  // One machine per branch, and the other branch is a clean run past it. That
+  // is what makes the return loop a complete repair rather than a consolation.
+  assert.equal(
+    config.forks.length,
+    level.forks,
+    `${label}: fork count disagrees with the level`,
+  );
+  for (const fork of config.forks) {
+    const branchSections = config.sections.filter(
+      (section) =>
+        section.start >= fork.commitAt &&
+        section.end <= fork.mergeAt &&
+        section.lane !== 'both',
+    );
+    const onMachineLane = branchSections.filter(
+      (section) => section.lane === fork.machineLane,
+    );
+    const onBypassLane = branchSections.filter(
+      (section) => section.lane !== fork.machineLane,
+    );
+    assert.equal(
+      onMachineLane.length,
+      1,
+      `${label} ${fork.id}: a branch must hold exactly one machine`,
+    );
+    assert.equal(onMachineLane[0].kind, 'machine');
+    assert.equal(onMachineLane[0].machineId, fork.machineId);
+    assert.equal(
+      onBypassLane.length,
+      1,
+      `${label} ${fork.id}: the other branch must be a single clean run`,
+    );
+    assert.equal(
+      onBypassLane[0].kind,
+      'clean',
+      `${label} ${fork.id}: a bypass may not carry a machine`,
+    );
+    assert.ok(
+      fork.prepSeconds >= 8 && fork.prepSeconds <= 12,
+      `${label} ${fork.id}: fork prep must stay 8-12 seconds`,
+    );
+    // The way back: a loop that starts where the branches merge.
+    assert.ok(
+      fork.returnEnd > fork.returnStart,
+      `${label} ${fork.id}: the return loop has no length`,
+    );
+    assert.equal(returnableFork(levelId, fork.returnStart)?.id, fork.id);
+    assert.equal(returnableFork(levelId, fork.returnEnd)?.id, fork.id);
+    assert.equal(
+      returnableFork(levelId, fork.decisionStart),
+      null,
+      `${label} ${fork.id}: the loop may not be offered before the choice`,
+    );
+  }
+
+  // Sections must march forwards and finish with the inspection.
+  const spine = config.sections.filter((section) => section.lane === 'both');
+  for (const [index, section] of spine.entries()) {
+    assert.ok(section.end > section.start, `${label}: ${section.id} is empty`);
+    if (index > 0)
+      assert.ok(
+        section.start >= spine[index - 1].start,
+        `${label}: ${section.id} runs backwards`,
+      );
+  }
+  assert.equal(spine.at(-1)?.kind, 'inspection');
+  assert.equal(config.finishAt, spine.at(-1)?.end);
+
+  for (const machineId of level.unlockedMachines)
+    assert.ok(
+      PROCESSING_MACHINE_IDS.includes(machineId),
+      `${label}: unknown machine ${machineId}`,
+    );
+}
+
+// Generation is deterministic: the same level id always rebuilds the same shift.
+assert.deepEqual(
+  levelConfig(TUTORIAL_LEVEL_COUNT + 6),
+  levelConfig(TUTORIAL_LEVEL_COUNT + 6),
+);
+assert.notDeepEqual(
+  levelConfig(TUTORIAL_LEVEL_COUNT + 6).sections,
+  levelConfig(TUTORIAL_LEVEL_COUNT + 7).sections,
+  'two generated shifts in a row must not be the same line',
+);
+
+// Taking the bypass leaves the metal untouched, which is exactly why riding the
+// return loop and entering the machine repairs the mistake completely.
+const bypassLevel = TUTORIAL_LEVEL_COUNT + 2;
+const bypassFork = levelConfig(bypassLevel).forks[0];
+const beforeFork = simulateProcessingPlan(['furnace']);
+const bypassed = simulateProcessingPlan(['furnace']);
+assert.deepEqual(
+  { ...bypassed, machineHistory: [] },
+  { ...beforeFork, machineHistory: [] },
+  'a bypass must not change the workpiece',
+);
+const repaired = simulateProcessingPlan(['furnace', bypassFork.machineId]);
+assert.notDeepEqual(
+  { ...repaired, machineHistory: [] },
+  { ...bypassed, machineHistory: [] },
+  'entering the machine on the second pass has to do something',
+);
+
+/* --- the way back ---------------------------------------------------- */
+
+// The problem the loop exists for: once a lane is committed it cannot be
+// switched, and the line only runs forwards. Without a way back, a branch taken
+// by mistake is the end of the shift.
+const loopLevel = TUTORIAL_LEVEL_COUNT + 3;
+const loopFork = levelConfig(loopLevel).forks[0];
+let loopRun = setProcessingLevel(createRun(), loopLevel);
+
+loopRun.factoryProgress = (loopFork.commitAt + loopFork.mergeAt) / 2;
+assert.equal(
+  consumeProcessingAction(resolveProcessingQuiz(loopRun, true).run, 'toggle-lane')
+    .consumed,
+  false,
+  'a committed branch still cannot be switched in place',
+);
+
+// Off the loop the action is refused and the earned action is kept.
+loopRun.factoryProgress = loopFork.decisionStart;
+const tooEarly = consumeProcessingAction(
+  resolveProcessingQuiz(loopRun, true).run,
+  'recirculate',
+);
+assert.equal(tooEarly.consumed, false);
+assert.equal(tooEarly.run.actionReady, true);
+
+// On the loop it sends the part back to the decision, lane cleared.
+loopRun.factoryProgress = loopFork.returnStart + 1;
+loopRun.processingLane = 'lower';
+const sentBack = consumeProcessingAction(
+  resolveProcessingQuiz(loopRun, true).run,
+  'recirculate',
+);
+assert.equal(sentBack.consumed, true);
+assert.equal(sentBack.rewoundTo, loopFork.decisionStart);
+assert.equal(sentBack.run.factoryProgress, loopFork.decisionStart);
+assert.equal(sentBack.run.playerX, loopFork.decisionStart);
+assert.equal(
+  sentBack.run.actionReady,
+  false,
+  'the loop costs the earned action like every other move',
+);
+assert.equal(
+  returnableFork(loopLevel, sentBack.run.factoryProgress),
+  null,
+  'after the rewind the part is upstream of the loop again',
+);
+// Back at the decision the lane is free, so the fork is a real choice again.
+const rechosen = consumeProcessingAction(
+  resolveProcessingQuiz(sentBack.run, true).run,
+  'toggle-lane',
+);
+assert.equal(
+  rechosen.consumed,
+  true,
+  'the whole point of the loop is that the branch can be picked again',
+);
+
+// The metal itself is untouched: the loop costs time, not quality.
+assert.deepEqual(sentBack.run.workpiece, loopRun.workpiece);
 
 process.stdout.write('processing smoke passed\n');

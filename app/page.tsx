@@ -49,12 +49,15 @@ import {
   type ConveyorRun,
 } from '@/lib/conveyor-game';
 import {
-  LEVEL_CONFIGS,
   MACHINE_CYCLE_STAGES,
+  MACHINE_EFFECTS,
   PROCESSING_BONUS_DATA,
-  PROCESSING_LEVELS,
+  TUTORIAL_LEVEL_COUNT,
   applyMachineEffect,
   describeProcessingRequirements,
+  levelConfig,
+  processingLevel,
+  returnableFork,
   evaluateProcessingState,
   getProcessingVisualState,
   type FactorySection,
@@ -87,7 +90,12 @@ const BONUS_ICONS = {
   slow: Timer,
 } as const;
 
-const FACTORY_LEVELS = [1, 2, 3, 4, 5] as const;
+// The lessons are pickable from the menu; past them the shifts are generated,
+// so the picker offers the first one and the run carries on from there.
+const FACTORY_LEVELS = Array.from(
+  { length: TUTORIAL_LEVEL_COUNT + 1 },
+  (_, index) => index + 1,
+);
 
 type WebMcpContext = {
   registerTool: (
@@ -128,7 +136,7 @@ function sectionFor(
   run: ConveyorRun,
   predicate?: (section: FactorySection) => boolean,
 ) {
-  const config = LEVEL_CONFIGS[run.level];
+  const config = levelConfig(run.level);
   const effectiveLane =
     run.level === 5 && run.processingVariant === 1
       ? run.processingLane === 'upper'
@@ -148,7 +156,7 @@ function sectionFor(
 
 function committedForkFor(run: ConveyorRun) {
   return (
-    LEVEL_CONFIGS[run.level].forks.find(
+    levelConfig(run.level).forks.find(
       (fork) =>
         run.factoryProgress >= fork.commitAt &&
         run.factoryProgress < fork.mergeAt,
@@ -164,6 +172,9 @@ function targetState(target: ProcessingTarget): ProcessingState {
     thickness: middle(target.thickness),
     width: middle(target.width),
     length: middle(target.length),
+    bend: target.bend ? middle(target.bend) : 0,
+    holes: target.holes ? Math.round(middle(target.holes)) : 0,
+    polish: target.polish ? middle(target.polish) : 0,
     crackRisk: 0,
     cracked: false,
     machineHistory: [],
@@ -184,13 +195,24 @@ function PieceGlyph({
     '--piece-thickness': clamp(visual.thicknessScale, 0.48, 1.35),
     '--piece-color': ghost ? '#77f4df' : visual.metalColor,
     '--piece-glow': ghost ? 0.24 : visual.glow,
+    // Bend tilts the far end of the silhouette; polish lifts its sheen.
+    '--piece-bend': `${clamp(visual.bendDegrees, 0, 90)}deg`,
+    '--piece-polish': clamp(visual.polish01, 0, 1),
   } as CSSProperties;
   return (
     <span
       className={`piece-glyph ${ghost ? 'is-ghost' : ''} ${state.cracked ? 'is-cracked' : ''}`}
       style={style}
       aria-hidden="true"
-    />
+    >
+      {visual.holes > 0 && (
+        <i className="piece-holes">
+          {Array.from({ length: Math.min(visual.holes, 6) }, (_, index) => (
+            <b key={index} />
+          ))}
+        </i>
+      )}
+    </span>
   );
 }
 
@@ -511,7 +533,7 @@ export default function ConveyorGame() {
         return;
       }
 
-      const config = LEVEL_CONFIGS[run.level];
+      const config = levelConfig(run.level);
       const speed =
         config.baseBeltSpeed * processingTransportMultiplier(run, run.elapsed);
       run.factoryProgress = Math.min(
@@ -820,8 +842,31 @@ export default function ConveyorGame() {
         publishHud();
         return false;
       }
+      if (resolution.rewoundTo !== undefined) {
+        // The part is upstream again, so every machine pass and every section
+        // visit past that point has to be forgotten — otherwise a re-entered
+        // machine would stand idle and the lesson of the loop would be lost.
+        const config = levelConfig(resolution.run.level);
+        const rewoundTo = resolution.rewoundTo;
+        const stale = new Set(
+          config.sections
+            .filter((section) => section.end > rewoundTo)
+            .map((section) => section.id),
+        );
+        for (const key of processedCyclesRef.current)
+          if (stale.has(key.split(':')[0]))
+            processedCyclesRef.current.delete(key);
+        for (const id of visitedSectionsRef.current)
+          if (stale.has(id)) visitedSectionsRef.current.delete(id);
+        machineRuntimeRef.current = null;
+        resolution.run.routeProgress = clamp(
+          rewoundTo / Math.max(1, config.finishAt),
+          0,
+          0.99,
+        );
+      }
       if (resolution.longitudinalDelta !== 0) {
-        const config = LEVEL_CONFIGS[resolution.run.level];
+        const config = levelConfig(resolution.run.level);
         const previousProgress = resolution.run.factoryProgress;
         resolution.run.factoryProgress = clamp(
           resolution.run.factoryProgress + resolution.longitudinalDelta,
@@ -909,6 +954,7 @@ export default function ConveyorGame() {
       else if (key === 'w' || key === 'arrowup' || key === ' ')
         executeAction('toggle-lane');
       else if (key === 'q') useStoredBonus();
+      else if (key === 'e') executeAction('recirculate');
       if (['arrowleft', 'arrowright', 'arrowup', ' '].includes(key))
         event.preventDefault();
     };
@@ -1028,7 +1074,7 @@ export default function ConveyorGame() {
     return () => lifecycle.abort();
   }, [selectedFactoryLevel]);
 
-  const gameLevel = PROCESSING_LEVELS[hud.level];
+  const gameLevel = processingLevel(hud.level);
   const quality = evaluateProcessingState(hud.workpiece, hud.target);
   const currentSection = sectionFor(hud);
   const laneLocked = Boolean(committedForkFor(hud));
@@ -1037,6 +1083,10 @@ export default function ConveyorGame() {
     hud.workpiece,
     hud.target,
   );
+  const returnFork =
+    hud.phase === 'playing'
+      ? returnableFork(hud.level, hud.factoryProgress)
+      : null;
   const storedBonus = hud.storedProcessingBonus;
   const storedBonusData = storedBonus
     ? PROCESSING_BONUS_DATA[storedBonus]
@@ -1222,6 +1272,24 @@ export default function ConveyorGame() {
                         <kbd>D</kbd>
                       </Button>
                     </div>
+                    {returnFork && (
+                      <Button
+                        variant="outline"
+                        className="return-action"
+                        onClick={() => executeAction('recirculate')}
+                      >
+                        <kbd>E</kbd>
+                        <RotateCcw />
+                        <span>
+                          <strong>НА ПЕТЛЮ ВОЗВРАТА</strong>
+                          <small>
+                            пройти развилку «
+                            {MACHINE_EFFECTS[returnFork.machineId].shortLabel}»
+                            заново
+                          </small>
+                        </span>
+                      </Button>
+                    )}
                   </div>
                 </div>
               ) : (
@@ -1413,7 +1481,7 @@ export default function ConveyorGame() {
                     onClick={() => setSelectedFactoryLevel(level)}
                   >
                     <b>{level}</b>
-                    <span>{PROCESSING_LEVELS[level].title}</span>
+                    <span>{processingLevel(level).title}</span>
                   </Button>
                 ))}
               </div>
@@ -1582,18 +1650,14 @@ export default function ConveyorGame() {
               </Button>
               <Button
                 onClick={() => {
+                  // There is no last level any more: a won shift always has a
+                  // next one, generated if it is past the lessons.
                   const nextLevel =
-                    hud.phase === 'won' && hud.level < 5
-                      ? ((hud.level + 1) as ProcessingLevelId)
-                      : hud.level;
+                    hud.phase === 'won' ? hud.level + 1 : hud.level;
                   startRun(undefined, nextLevel);
                 }}
               >
-                {hud.phase === 'won' && hud.level < 5 ? (
-                  <PackageCheck />
-                ) : (
-                  <RotateCcw />
-                )}{' '}
+                {hud.phase === 'won' ? <PackageCheck /> : <RotateCcw />}{' '}
                 {hud.phase === 'won' && hud.level < 5
                   ? `Уровень ${hud.level + 1}`
                   : 'Повторить'}

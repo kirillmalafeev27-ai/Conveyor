@@ -6,10 +6,10 @@ import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeom
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 
 import {
-  LEVEL_CONFIGS,
   ROUTES,
   ROUTE_ORDER,
   TERMINALS,
+  levelConfig,
   machineCyclePhase,
   machineCycleStrike,
   routeLength,
@@ -450,6 +450,14 @@ const PROCESSING_ZONE_COLORS: Record<ProcessingMachineId, number> = {
   rollers: 0xf0ad38,
   cooling: 0x55d8ff,
   cutter: 0xff4f87,
+  hammer: 0xff6a2c,
+  upsetter: 0xc86bff,
+  trimmer: 0xff8fb4,
+  bender: 0x8ce35a,
+  straightener: 0x7ad6a8,
+  punch: 0xffd166,
+  polisher: 0xbfe9ff,
+  quench: 0x4fa8ff,
 };
 
 function addProcessingZone(
@@ -568,14 +576,30 @@ export function FactoryViewport({
     scene.add(levelOneMachines);
     const levelMachineGroups: Partial<Record<ProcessingLevelId, THREE.Group>> =
       { 1: levelOneMachines };
-    for (const levelId of [2, 3, 4, 5] as const) {
+    // Assets arrive asynchronously, so the real builder is installed once they
+    // land. Until then a level still gets its group and floor markings.
+    const builtLevels = new Set<number>();
+    let buildLevelAssets: ((levelId: ProcessingLevelId) => void) | null = null;
+    const ensureLevelBuilt = (levelId: ProcessingLevelId) => {
+      if (builtLevels.has(levelId)) return;
+      ensureLevelGroup(levelId);
+      buildLevelZones(levelId);
+      if (!buildLevelAssets) return;
+      buildLevelAssets(levelId);
+      builtLevels.add(levelId);
+    };
+
+    const ensureLevelGroup = (levelId: ProcessingLevelId) => {
+      const existing = levelMachineGroups[levelId];
+      if (existing) return existing;
       const levelGroup = new THREE.Group();
       levelGroup.name = `LEVEL_${levelId}_MACHINES`;
       levelGroup.visible = false;
-      addForkGeometry(levelGroup, LEVEL_CONFIGS[levelId]);
+      addForkGeometry(levelGroup, levelConfig(levelId));
       levelMachineGroups[levelId] = levelGroup;
       scene.add(levelGroup);
-    }
+      return levelGroup;
+    };
 
     const parts: AnimatedParts = {
       pistonRods: [],
@@ -740,8 +764,9 @@ export function FactoryViewport({
       parts.linearMarks.push({ group: mark, baseX: x });
     }
 
-    for (const levelId of [1, 2, 3, 4, 5] as const) {
-      const config = LEVEL_CONFIGS[levelId];
+    // Built per level so a generated shift can raise its own floor markings.
+    const buildLevelZones = (levelId: ProcessingLevelId) => {
+      const config = levelConfig(levelId);
       const levelGroup = levelMachineGroups[levelId]!;
       for (const machineSection of config.sections) {
         if (machineSection.kind !== 'machine' || !machineSection.machineId)
@@ -788,7 +813,7 @@ export function FactoryViewport({
           }
         }
       }
-    }
+    };
 
     addRouteZone(
       parts.machineGroups['fork1-b-turbine']!,
@@ -905,101 +930,8 @@ export function FactoryViewport({
       if (disposed) return;
       const source = gltf.scene;
 
-      const furnace = cloneAsset(
-        source,
-        'ASSET_Processing_Furnace_Tunnel',
-        [0, 0, 0],
-        0.96,
-      );
-      if (furnace) {
-        furnace.traverse((node) => {
-          if (!(node instanceof THREE.Mesh)) return;
-          const materials = Array.isArray(node.material)
-            ? node.material
-            : [node.material];
-          for (const material of materials) {
-            if (!(material instanceof THREE.MeshStandardMaterial)) continue;
-            if (node.name.includes('Heat') || node.name.includes('Flame')) {
-              material.emissive.setHex(0xff5a18);
-              material.emissiveIntensity = 3.2;
-              parts.furnaceGlow.push(material);
-            } else if (
-              node.name.includes('Shell') ||
-              node.name.includes('Roof')
-            ) {
-              material.color.setHex(0x3e2522);
-              material.metalness = 0.8;
-              if (node.name.includes('Roof')) {
-                material.transparent = true;
-                material.opacity = 0.58;
-                material.depthWrite = false;
-              }
-            }
-          }
-        });
-        furnace.position.set(20.5, 0.47, 0);
-        furnace.rotation.y = Math.PI / 2;
-        levelOneMachines.add(furnace);
-
-        for (const x of [17.5, 23.5]) {
-          const glow = new THREE.PointLight(0xff5b19, 22, 14, 2);
-          glow.position.set(x, 2.2, 0);
-          levelOneMachines.add(glow);
-        }
-      }
-
-      const press = cloneAsset(
-        source,
-        'ASSET_Processing_Line_Press',
-        [0, 0, 0],
-        1.06,
-      );
-      if (press) {
-        press.traverse((node) => {
-          if (!(node instanceof THREE.Mesh)) return;
-          const materials = Array.isArray(node.material)
-            ? node.material
-            : [node.material];
-          for (const material of materials) {
-            if (!(material instanceof THREE.MeshStandardMaterial)) continue;
-            if (node.name.includes('Platen') || node.name.includes('Guard')) {
-              material.color.setHex(0xe3a724);
-              material.emissive.setHex(0xff502c);
-              material.emissiveIntensity = 0.28;
-            } else if (
-              node.name.includes('Crown') ||
-              node.name.includes('Column')
-            ) {
-              material.color.setHex(0x16363c);
-              material.metalness = 0.88;
-              if (node.name.includes('Crown')) {
-                material.transparent = true;
-                material.opacity = 0.68;
-                material.depthWrite = false;
-              }
-            }
-          }
-        });
-        press.position.set(42, 0.46, 0);
-        press.rotation.y = Math.PI / 2;
-        parts.pressRam = press.getObjectByName('Press_Main_Ram') ?? undefined;
-        parts.pressRamY = parts.pressRam?.position.y;
-        parts.pressPlate = press.getObjectByName('Press_Main_Platen') as
-          | THREE.Mesh
-          | undefined;
-        parts.pressPlateY = parts.pressPlate?.position.y;
-        parts.presses.push({
-          ram: parts.pressRam,
-          ramY: parts.pressRamY,
-          plate: parts.pressPlate,
-          plateY: parts.pressPlateY,
-          level: 1,
-          start: 35,
-          end: 49,
-          lane: 'both',
-        });
-        levelOneMachines.add(press);
-      }
+      // Level one used to be placed by hand at fixed coordinates; every level,
+      // including the generated ones, is now built from its own config below.
 
       const assetNames: Record<ProcessingMachineId, string> = {
         furnace: 'ASSET_Processing_Furnace_Tunnel',
@@ -1007,6 +939,14 @@ export function FactoryViewport({
         rollers: 'ASSET_Shaping_Rollers',
         cooling: 'ASSET_Cooling_Arch',
         cutter: 'ASSET_Processing_Transverse_Cutter',
+        hammer: 'ASSET_Processing_Line_Press',
+        upsetter: 'ASSET_Processing_Line_Press',
+        trimmer: 'ASSET_Processing_Transverse_Cutter',
+        bender: 'ASSET_Processing_Line_Press',
+        straightener: 'ASSET_Shaping_Rollers',
+        punch: 'ASSET_Processing_Line_Press',
+        polisher: 'ASSET_Shaping_Rollers',
+        quench: 'ASSET_Cooling_Arch',
       };
       const assetScales: Record<ProcessingMachineId, number> = {
         furnace: 0.96,
@@ -1014,10 +954,18 @@ export function FactoryViewport({
         rollers: 1,
         cooling: 1,
         cutter: 1.16,
+        hammer: 0.92,
+        upsetter: 1.12,
+        trimmer: 1.04,
+        bender: 0.98,
+        straightener: 0.94,
+        punch: 0.86,
+        polisher: 1.06,
+        quench: 1.08,
       };
       let coolingPhase = 0;
-      for (const levelId of [2, 3, 4, 5] as const) {
-        const config = LEVEL_CONFIGS[levelId];
+      const buildLevelMachines = (levelId: ProcessingLevelId) => {
+        const config = levelConfig(levelId);
         const levelGroup = levelMachineGroups[levelId]!;
         for (const machineSection of config.sections) {
           if (machineSection.kind !== 'machine' || !machineSection.machineId)
@@ -1151,7 +1099,10 @@ export function FactoryViewport({
             lane,
           });
         }
-      }
+      };
+
+      buildLevelAssets = buildLevelMachines;
+      for (const levelId of [1, 2, 3, 4, 5]) ensureLevelBuilt(levelId);
 
       const turbine = cloneAsset(
         source,
@@ -1283,7 +1234,8 @@ export function FactoryViewport({
       const visualBoost = run.elapsed < run.overdriveUntil ? 1.55 : 1;
       const routeBoost = run.completed.A ? 1.2 : 1;
       const level = run.level;
-      const levelConfig = LEVEL_CONFIGS[level];
+      ensureLevelBuilt(level);
+      const activeConfig = levelConfig(level);
 
       for (const routeId of ROUTE_ORDER) {
         if (parts.routeGroups[routeId])
@@ -1295,13 +1247,15 @@ export function FactoryViewport({
         }
       }
       parts.productionLine.visible = true;
-      for (const levelId of [1, 2, 3, 4, 5] as const) {
-        const levelGroup = parts.levelMachineGroups[levelId];
-        if (levelGroup) {
-          levelGroup.visible = levelId === level;
-          levelGroup.scale.z =
-            levelId === 5 && run.processingVariant === 1 ? -1 : 1;
-        }
+      // Any level that has ever been built keeps a group, so the run can walk
+      // onto a generated shift and the ones behind it simply go dark.
+      for (const [builtId, levelGroup] of Object.entries(
+        parts.levelMachineGroups,
+      )) {
+        if (!levelGroup) continue;
+        const isActive = Number(builtId) === level;
+        levelGroup.visible = isActive;
+        levelGroup.scale.z = isActive && run.processingVariant === 1 ? -1 : 1;
       }
 
       for (const mark of parts.routeMarks) {
@@ -1327,7 +1281,7 @@ export function FactoryViewport({
         const distance =
           (((mark.baseX +
             run.machineTime *
-              levelConfig.baseBeltSpeed *
+              activeConfig.baseBeltSpeed *
               1.45 *
               visualBoost *
               direction) %
@@ -1339,7 +1293,7 @@ export function FactoryViewport({
 
       const playerX = run.factoryProgress;
       const playerZ = processingLaneOffset(
-        levelConfig,
+        activeConfig,
         playerX,
         run.processingLane,
       );
@@ -1361,7 +1315,7 @@ export function FactoryViewport({
           continue;
         }
         const center = (machine.start + machine.end) / 2;
-        const owningFork = levelConfig.forks.find(
+        const owningFork = activeConfig.forks.find(
           (fork) => center >= fork.commitAt && center <= fork.mergeAt,
         );
         const routeIsCommitted =
@@ -1639,9 +1593,9 @@ export function FactoryViewport({
           : 2 + Math.sin(time * 3 + terminal.x) * 0.45;
       }
 
-      const exitReady = run.factoryProgress >= levelConfig.inspectionStart;
+      const exitReady = run.factoryProgress >= activeConfig.inspectionStart;
       if (parts.exit) {
-        parts.exit.position.x = levelConfig.inspectionStart + 4;
+        parts.exit.position.x = activeConfig.inspectionStart + 4;
         parts.exit.position.y = 0.52 + Math.sin(time * 2) * 0.05;
       }
       for (const material of parts.exitLights) {
