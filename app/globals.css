@@ -1379,6 +1379,29 @@ kbd {
   color: #71837f;
   font-size: 0.65rem;
 }
+.word-field-bank {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 9px;
+  margin: 9px 0 0;
+  padding: 7px 11px;
+  border: 1px solid rgba(202, 235, 230, 0.13);
+  border-radius: 10px;
+  background: rgba(8, 18, 20, 0.6);
+  font-size: 0.62rem;
+}
+.word-field-bank span {
+  color: #849994;
+  font-weight: 760;
+  letter-spacing: 0.04em;
+}
+.word-field-bank em {
+  color: #cfe6e1;
+  font-style: normal;
+  font-weight: 600;
+}
+
 .audio-replay {
   display: inline-flex;
   align-items: center;

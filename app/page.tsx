@@ -69,7 +69,12 @@ import {
   type ProcessingState,
   type ProcessingTarget,
 } from '@/lib/processing-game';
-import { exerciseFormatOf, exerciseHint } from '@/lib/questions';
+import {
+  exerciseFormatOf,
+  exerciseHint,
+  wordFieldBank,
+  wordFieldFor,
+} from '@/lib/questions';
 
 import { playQuestionAudio, stopQuestionAudio } from './question-audio';
 import {
@@ -336,6 +341,10 @@ export default function ConveyorGame() {
 
   const pool = useQuestionPool(settings, hud.phase === 'playing');
   const questionFormat = exerciseFormatOf(pool.question, settings.mode);
+  // The synonym drill shows all five members of the field, not just the four
+  // on the buttons: the fifth is what makes it a word field rather than a list
+  // of answers, and in free recall it is the only thing to aim at.
+  const wordField = wordFieldFor(pool.question.wordFieldBase);
   const isListening = questionFormat.id === 'audio';
   const poolRef = useRef(pool);
   const questionRef = useRef(pool.question);
@@ -1187,6 +1196,12 @@ export default function ConveyorGame() {
             <div className="question-panel">
               <p className="question-label">{pool.question.prompt}</p>
               <h1>{pool.question.context}</h1>
+              {wordField ? (
+                <p className="word-field-bank">
+                  <span>Wortfeld «{wordField.base}»</span>
+                  <em lang="de">{wordFieldBank(wordField).join(' · ')}</em>
+                </p>
+              ) : null}
               {isListening && pool.question.audioText ? (
                 <button
                   type="button"
