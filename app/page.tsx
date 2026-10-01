@@ -76,7 +76,11 @@ import {
   wordFieldFor,
 } from '@/lib/questions';
 
-import { playQuestionAudio, stopQuestionAudio } from './question-audio';
+import {
+  playQuestionAudio,
+  stopQuestionAudio,
+  unlockQuestionAudio,
+} from './question-audio';
 import {
   DEFAULT_LEARNING_SETTINGS,
   GRAMMAR_TOPIC_GROUPS,
@@ -405,11 +409,40 @@ export default function ConveyorGame() {
     [],
   );
 
+  // Everything audible on iOS has to be granted inside a real gesture, and a
+  // run makes most of its noise on a timer, so the very first touch of the
+  // session buys the permission for all of it.
+  useEffect(() => {
+    const unlock = () => {
+      unlockQuestionAudio();
+      const context = audioContextRef.current;
+      if (context?.state === 'suspended') void context.resume();
+    };
+    window.addEventListener('pointerdown', unlock, { once: true });
+    window.addEventListener('keydown', unlock, { once: true });
+    return () => {
+      window.removeEventListener('pointerdown', unlock);
+      window.removeEventListener('keydown', unlock);
+    };
+  }, []);
+
   const sound = useCallback(
     (kind: 'correct' | 'wrong' | 'action' | 'machine' | 'win') => {
-      if (!audioEnabled) return;
-      const context = audioContextRef.current ?? new AudioContext();
+      if (!audioEnabled || typeof window === 'undefined') return;
+      const AudioContextClass =
+        window.AudioContext ??
+        (
+          window as typeof window & {
+            webkitAudioContext?: typeof AudioContext;
+          }
+        ).webkitAudioContext;
+      if (!AudioContextClass) return;
+      const context = audioContextRef.current ?? new AudioContextClass();
       audioContextRef.current = context;
+      // iOS hands back a suspended context whenever one is built outside a
+      // gesture, and suspends it again every time the tab goes to the back.
+      // Without this the factory is silent on an iPhone for the whole run.
+      if (context.state === 'suspended') void context.resume();
       const now = context.currentTime;
       const oscillator = context.createOscillator();
       const gain = context.createGain();

@@ -27,6 +27,40 @@
   --radius-lg: 11px;
 }
 
+/* --- Touch devices ------------------------------------------------------
+   Safari on iOS holds every tap for ~300ms waiting to see whether a second
+   one follows, and zooms the page when it does. In a drill that is answered
+   against a burning timer that reads as a dead button, so every control
+   declares its own gesture handling and nothing waits for a double tap. */
+button,
+select,
+input,
+textarea,
+label,
+kbd,
+[role='button'],
+a[href] {
+  touch-action: manipulation;
+}
+
+html {
+  /* Landscape must not reflow the type and push the answers off screen. */
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  /* A run never scrolls the page, so rubber-banding and pull-to-refresh can
+     only interrupt it. */
+  overscroll-behavior: none;
+}
+
+/* A finger leaves no cursor behind, so the grey iOS flash is the only press
+   feedback there is until :active says otherwise below. */
+button,
+[role='button'] {
+  -webkit-tap-highlight-color: transparent;
+}
+
 /* Manufacturing redesign: the player is the workpiece, not a hit-point avatar. */
 .control-rail {
   grid-template-rows: minmax(0, 1fr) clamp(142px, 19vh, 174px);
@@ -70,7 +104,18 @@
   transform: none !important;
 }
 
-.processing-actions button:hover {
+@media (hover: hover) and (pointer: fine) {
+  .processing-actions button:hover {
+    border-color: rgba(116, 240, 219, 0.74);
+    background: linear-gradient(
+      145deg,
+      rgba(43, 67, 70, 0.94),
+      rgba(13, 22, 25, 0.98)
+    );
+  }
+}
+
+.processing-actions button:active:not(:disabled) {
   border-color: rgba(116, 240, 219, 0.74);
   background: linear-gradient(
     145deg,
@@ -1420,7 +1465,13 @@ kbd {
     border-color 120ms ease,
     background 120ms ease;
 }
-.audio-replay:hover {
+@media (hover: hover) and (pointer: fine) {
+  .audio-replay:hover {
+    border-color: #58f0d8;
+    background: rgba(14, 32, 34, 0.9);
+  }
+}
+.audio-replay:active {
   border-color: #58f0d8;
   background: rgba(14, 32, 34, 0.9);
 }
@@ -1449,7 +1500,7 @@ kbd {
   font-size: 0.78rem;
   font-weight: 750;
 }
-.answer-grid button:hover,
+.answer-grid button:active,
 .answer-grid button.is-selected {
   border-color: #5bf0d8;
   background: rgba(36, 101, 92, 0.32);
@@ -1601,7 +1652,13 @@ kbd {
   grid-column: 3;
   grid-row: 1;
 }
-.movement-pad button:hover {
+@media (hover: hover) and (pointer: fine) {
+  .movement-pad button:hover {
+    border-color: #b99cff;
+    background: rgba(107, 77, 159, 0.22);
+  }
+}
+.movement-pad button:active:not(:disabled) {
   border-color: #b99cff;
   background: rgba(107, 77, 159, 0.22);
 }
@@ -1944,7 +2001,12 @@ kbd {
   color: #04110f;
   font-weight: 850;
 }
-.start-button:hover {
+@media (hover: hover) and (pointer: fine) {
+  .start-button:hover {
+    background: #7cf5e2;
+  }
+}
+.start-button:active {
   background: #7cf5e2;
 }
 .start-button > span {
@@ -2483,7 +2545,9 @@ kbd {
 }
 .answer-grid {
   grid-template-columns: 1fr;
-  grid-template-rows: repeat(4, minmax(0, 1fr));
+  /* 44px is the smallest target a finger hits reliably, so a short viewport
+     shrinks the rest of the card and never the answers. */
+  grid-template-rows: repeat(4, minmax(44px, 1fr));
   gap: 9px;
 }
 .answer-grid button {
@@ -2497,7 +2561,12 @@ kbd {
   font-size: clamp(1rem, 1.35vw, 1.25rem);
   font-weight: 700;
 }
-.answer-grid button:hover {
+@media (hover: hover) and (pointer: fine) {
+  .answer-grid button:hover {
+    transform: translateX(3px);
+  }
+}
+.answer-grid button:active {
   transform: translateX(3px);
 }
 .answer-grid kbd {
@@ -2512,6 +2581,9 @@ kbd {
   color: #91aaa5;
   font-size: 0.7rem;
   opacity: 0;
+  /* Transparent is not absent: at phone height this line overlaps the last
+     answer, and without this the fourth option can never be tapped. */
+  pointer-events: none;
   transition: opacity 0.15s;
 }
 .feedback-line.is-visible {
@@ -2827,13 +2899,14 @@ kbd {
     font-size: 0.43rem;
   }
   .answer-slot {
-    flex: 0 0 min(164px, 24dvh);
+    flex: 0 0 auto;
   }
   .answer-grid {
-    gap: 4px;
+    height: auto;
+    gap: 5px;
   }
   .answer-grid button {
-    min-height: 0;
+    min-height: 44px;
     padding: 0 8px;
     gap: 8px;
     border-radius: 6px;
@@ -3000,13 +3073,16 @@ kbd {
     height: 8px;
   }
   .answer-slot {
-    flex-basis: 172px;
+    flex: 0 0 auto;
   }
   .answer-grid {
-    gap: 4px;
+    height: auto;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-rows: repeat(2, minmax(44px, auto));
+    gap: 5px;
   }
   .answer-grid button {
-    min-height: 0;
+    min-height: 44px;
     font-size: 0.82rem;
   }
   .feedback-line {
@@ -3075,5 +3151,70 @@ kbd {
   }
   .bonus-dock.processing-bonus {
     padding: 7px 10px;
+  }
+}
+
+/* --- Small screens: the controls are sized first ------------------------
+   A quiz card handed a fixed height clips whatever does not fit, and what did
+   not fit was the bottom of the answer stack: on a 390x664 screen the fourth
+   option sat under the bonus dock, out of reach of any finger. So the rail now
+   asks for the height its buttons need, the factory view keeps the remainder,
+   and if even that is not enough the rail scrolls rather than hide a button. */
+@media (max-width: 700px) {
+  .play-grid {
+    grid-template-rows: minmax(120px, 1fr) auto;
+  }
+}
+
+@media (max-width: 700px), (max-height: 620px) {
+  .control-rail {
+    grid-template-rows: auto auto;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+  }
+  .quiz-card,
+  .bonus-dock.processing-bonus {
+    min-height: 0;
+  }
+  .question-panel {
+    flex: 1 1 auto;
+    min-height: 54px;
+  }
+  .answer-slot {
+    flex: 0 0 auto;
+  }
+  /* The task line above the sentence already carries the instruction, and the
+     room this frees is the room the fourth answer needs. */
+  .answer-hint {
+    display: none;
+  }
+}
+
+/* A landscape phone is 342px tall: the answers go two by two, and the dock
+   gives up the padding that would otherwise push them off the screen. */
+@media (max-height: 620px) and (min-width: 701px) {
+  .impulse-row strong {
+    font-size: 0.86rem;
+  }
+  .bonus-dock.processing-bonus {
+    gap: 6px;
+    padding: 6px 10px;
+  }
+}
+
+/* A 34px chip is fine under a cursor and too small under a thumb, so on a
+   touch screen the sound and settings chips grow to the 44pt minimum. */
+@media (hover: none) {
+  .viewport-buttons {
+    gap: 8px;
+  }
+  .viewport-buttons button {
+    width: 44px;
+    height: 44px;
+  }
+  .viewport-buttons svg {
+    width: 20px;
+    height: 20px;
   }
 }
