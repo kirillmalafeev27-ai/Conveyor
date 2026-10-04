@@ -204,12 +204,12 @@ function configuration() {
       environment.AITUNNEL_MODELS ??
       environment.AI_MODEL ??
       environment.AITUNNEL_MODEL ??
-      'gpt-6-sol')
+      'gpt-5.4')
     : (environment.AI_MODELS ??
       environment.OPENAI_MODELS ??
       environment.AI_MODEL ??
       environment.OPENAI_MODEL ??
-      'gpt-6-sol');
+      'gpt-5.4');
   const models = String(rawModels)
     .split(',')
     .map((model) => compactText(model, 100))
